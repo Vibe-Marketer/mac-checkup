@@ -51,6 +51,11 @@ print_bad()     { echo -e "  ${RED}${FAIL}${NC}  $1"; }
 print_info()    { echo -e "  ${DIM}→${NC}  $1"; }
 
 # Convert bytes to human-readable size
+# Portable timeout — macOS doesn't ship GNU timeout, so define one using perl
+if ! command -v timeout &>/dev/null; then
+    timeout() { local secs=$1; shift; perl -e "alarm $secs; exec @ARGV" -- "$@"; }
+fi
+
 human_size() {
     local bytes=$1
     if [ -z "$bytes" ] || [ "$bytes" -eq 0 ] 2>/dev/null; then
@@ -105,8 +110,10 @@ show_system_info() {
         CHIP_TYPE="Intel"
     fi
 
-    MAC_MODEL=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Model Name" | awk -F': ' '{print $2}')
-    MAC_CHIP=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Chip\|Processor Name" | head -1 | awk -F': ' '{print $2}')
+    local hw_data
+    hw_data=$(system_profiler SPHardwareDataType 2>/dev/null)
+    MAC_MODEL=$(echo "$hw_data" | grep "Model Name" | awk -F': ' '{print $2}')
+    MAC_CHIP=$(echo "$hw_data" | grep "Chip\|Processor Name" | head -1 | awk -F': ' '{print $2}')
     MACOS_VERSION=$(sw_vers -productVersion 2>/dev/null)
     TOTAL_RAM=$(sysctl -n hw.memsize 2>/dev/null)
     TOTAL_RAM_GB=$(echo "scale=0; $TOTAL_RAM / 1073741824" | bc 2>/dev/null)
@@ -366,11 +373,10 @@ check_resource_hogs() {
     # ── Memory pressure ──
     print_section "MEMORY PRESSURE"
 
-    local mem_pressure
-    mem_pressure=$(memory_pressure 2>/dev/null | grep "System-wide memory free percentage" | grep -o '[0-9]*')
-    local pages_free=$(vm_stat 2>/dev/null | grep "Pages free" | awk '{print $3}' | tr -d '.')
-    local pages_inactive=$(vm_stat 2>/dev/null | grep "Pages inactive" | awk '{print $3}' | tr -d '.')
-    local pages_speculative=$(vm_stat 2>/dev/null | grep "Pages speculative" | awk '{print $3}' | tr -d '.')
+    local mem_pressure=""
+    if command -v memory_pressure &>/dev/null; then
+        mem_pressure=$(timeout 10 memory_pressure 2>/dev/null | grep "System-wide memory free percentage" | grep -o '[0-9]*')
+    fi
     local swap_used=$(sysctl -n vm.swapusage 2>/dev/null | grep -o 'used = [0-9.]*M' | grep -o '[0-9.]*')
 
     if [ -n "$mem_pressure" ]; then
@@ -1053,7 +1059,7 @@ check_startup() {
 
 check_stats() {
     local stats_installed=false
-    if [ -d "/Applications/Stats.app" ] || [ -d "$HOME/Applications/Stats.app" ] || brew list --cask stats &>/dev/null 2>&1; then
+    if [ -d "/Applications/Stats.app" ] || [ -d "$HOME/Applications/Stats.app" ] || (command -v brew &>/dev/null && brew list --cask stats &>/dev/null 2>&1); then
         stats_installed=true
     fi
 
@@ -1112,25 +1118,15 @@ show_optimizations() {
     print_section "SYSTEM"
 
     local updates_available
-    updates_available=$(softwareupdate -l 2>&1 | grep -c "available")
-    if [ "$updates_available" -gt 0 ]; then
+    # Use timeout to prevent softwareupdate from hanging (can take 60+ seconds)
+    updates_available=$(timeout 10 softwareupdate -l 2>&1 | grep -c "available" || echo "0")
+    if [ "$updates_available" -gt 0 ] 2>/dev/null; then
         print_warning "macOS updates are available"
         print_info "Updates include security patches and performance improvements"
         print_info "Go to System Settings → General → Software Update"
         opt_count=$((opt_count + 1))
     else
         print_good "macOS is up to date"
-    fi
-
-    # ── Check FileVault ──
-    local fv_status
-    fv_status=$(fdesetup status 2>/dev/null)
-    if echo "$fv_status" | grep -q "On"; then
-        print_good "FileVault encryption: ${BOLD}ON${NC} — Your data is protected"
-    else
-        print_info "FileVault encryption: ${BOLD}OFF${NC}"
-        print_info "Consider enabling in System Settings → Privacy & Security → FileVault"
-        opt_count=$((opt_count + 1))
     fi
 
     # ── DNS cache ──
@@ -1157,8 +1153,12 @@ show_optimizations() {
     echo ""
     read -p "  Would you like to flush your DNS cache? (speeds up web browsing) (y/n): " flush_dns
     if [[ "$flush_dns" =~ ^[Yy] ]]; then
-        sudo dscacheutil -flushcache 2>/dev/null && sudo killall -HUP mDNSResponder 2>/dev/null
-        print_good "DNS cache flushed"
+        echo -e "  ${DIM}(requires admin password)${NC}"
+        if sudo dscacheutil -flushcache 2>/dev/null && sudo killall -HUP mDNSResponder 2>/dev/null; then
+            print_good "DNS cache flushed"
+        else
+            print_info "Could not flush DNS (admin password required)"
+        fi
     fi
 
     # ── Reduce visual effects suggestion ──
@@ -1178,7 +1178,341 @@ show_optimizations() {
 }
 
 # ============================================================================
-# 10. FINAL SUMMARY
+# 10. WI-FI & NETWORK
+# ============================================================================
+
+check_wifi() {
+    print_header "WI-FI & NETWORK"
+
+    # Get Wi-Fi interface name
+    local wifi_if
+    wifi_if=$(networksetup -listallhardwareports 2>/dev/null | awk '/Wi-Fi/{getline; print $2}')
+    [ -z "$wifi_if" ] && wifi_if="en0"
+
+    # Check if Wi-Fi is on
+    local wifi_power
+    wifi_power=$(networksetup -getairportpower "$wifi_if" 2>/dev/null | awk -F': ' '{print $2}')
+
+    if [ "$wifi_power" = "Off" ]; then
+        print_info "Wi-Fi is ${BOLD}OFF${NC}"
+        return
+    fi
+
+    # Get Wi-Fi details using system_profiler (works on all macOS versions)
+    local wifi_data
+    wifi_data=$(system_profiler SPAirPortDataType 2>/dev/null)
+
+    local wifi_name
+    wifi_name=$(networksetup -getairportnetwork "$wifi_if" 2>/dev/null | awk -F': ' '{print $2}')
+
+    if [ -n "$wifi_name" ] && [ "$wifi_name" != "You are not associated with an AirPort network." ]; then
+        print_good "Connected to: ${BOLD}${wifi_name}${NC}"
+    else
+        print_bad "Not connected to any Wi-Fi network"
+        TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+        ALL_RECOMMENDATIONS+=("Wi-Fi is not connected to any network.")
+        return
+    fi
+
+    # Signal strength (RSSI)
+    local rssi
+    rssi=$(/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null | grep "agrCtlRSSI" | awk '{print $2}')
+
+    if [ -n "$rssi" ]; then
+        if [ "$rssi" -ge -50 ] 2>/dev/null; then
+            print_good "Signal strength: ${BOLD}Excellent${NC} (${rssi} dBm)"
+        elif [ "$rssi" -ge -60 ] 2>/dev/null; then
+            print_good "Signal strength: ${BOLD}Good${NC} (${rssi} dBm)"
+        elif [ "$rssi" -ge -70 ] 2>/dev/null; then
+            print_warning "Signal strength: ${BOLD}Fair${NC} (${rssi} dBm)"
+            print_info "Move closer to your router for better speed"
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        else
+            print_bad "Signal strength: ${BOLD}Weak${NC} (${rssi} dBm)"
+            print_info "You're too far from the router or there's interference"
+            TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+            ALL_RECOMMENDATIONS+=("Wi-Fi signal is weak (${rssi} dBm). Move closer to the router or consider a mesh system.")
+        fi
+    fi
+
+    # Channel band (2.4 GHz vs 5 GHz)
+    local channel
+    channel=$(/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I 2>/dev/null | grep "channel" | head -1 | awk '{print $2}')
+    if [ -n "$channel" ]; then
+        local chan_num=$(echo "$channel" | awk -F',' '{print $1}')
+        if [ "$chan_num" -le 14 ] 2>/dev/null; then
+            print_info "Band: ${BOLD}2.4 GHz${NC} (channel ${channel})"
+            print_info "5 GHz is faster if your router supports it"
+        else
+            print_good "Band: ${BOLD}5 GHz${NC} (channel ${channel}) — Faster band"
+        fi
+    fi
+
+    # Quick internet connectivity test
+    print_section "INTERNET"
+
+    local ping_result
+    ping_result=$(ping -c 1 -t 5 8.8.8.8 2>/dev/null | grep "time=" | grep -o "time=[0-9.]*" | cut -d= -f2)
+
+    if [ -n "$ping_result" ]; then
+        local ping_int=$(echo "$ping_result" | awk -F'.' '{print $1}')
+        if [ "$ping_int" -lt 20 ] 2>/dev/null; then
+            print_good "Ping: ${BOLD}${ping_result} ms${NC} — Excellent"
+        elif [ "$ping_int" -lt 50 ] 2>/dev/null; then
+            print_good "Ping: ${BOLD}${ping_result} ms${NC} — Good"
+        elif [ "$ping_int" -lt 100 ] 2>/dev/null; then
+            print_warning "Ping: ${BOLD}${ping_result} ms${NC} — Slow"
+            print_info "High latency — video calls and browsing may feel sluggish"
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        else
+            print_bad "Ping: ${BOLD}${ping_result} ms${NC} — Very slow"
+            TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+            ALL_RECOMMENDATIONS+=("Internet latency is very high (${ping_result} ms). Check your router or ISP.")
+        fi
+    else
+        print_bad "Cannot reach the internet"
+        print_info "Check your Wi-Fi connection and router"
+        TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+    fi
+
+    # DNS resolution speed
+    local dns_time
+    dns_time=$( { time nslookup google.com >/dev/null 2>&1; } 2>&1 | grep real | awk '{print $2}' | sed 's/[ms]//g')
+    # Fallback: just check if DNS works
+    if nslookup google.com >/dev/null 2>&1; then
+        print_good "DNS resolution: Working"
+    else
+        print_bad "DNS resolution: ${BOLD}FAILING${NC}"
+        print_info "Try changing DNS to 8.8.8.8 or 1.1.1.1 in System Settings → Wi-Fi → Details → DNS"
+        TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+        ALL_RECOMMENDATIONS+=("DNS is not resolving. Change DNS servers to 8.8.8.8 or 1.1.1.1.")
+    fi
+}
+
+# ============================================================================
+# 11. BACKUP STATUS
+# ============================================================================
+
+check_backup() {
+    print_header "BACKUP STATUS"
+
+    # Check Time Machine
+    local tm_dest
+    tm_dest=$(tmutil destinationinfo 2>/dev/null | grep "Name" | head -1 | awk -F': ' '{print $2}')
+
+    if [ -n "$tm_dest" ]; then
+        print_good "Time Machine: ${BOLD}Configured${NC}"
+        print_info "Backup destination: ${tm_dest}"
+
+        # Last backup date
+        local last_backup
+        last_backup=$(tmutil latestbackup 2>/dev/null)
+        if [ -n "$last_backup" ]; then
+            local backup_date
+            backup_date=$(echo "$last_backup" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}')
+            local backup_epoch
+            backup_epoch=$(date -jf "%Y-%m-%d" "$backup_date" +%s 2>/dev/null)
+            local now_epoch=$(date +%s)
+
+            if [ -n "$backup_epoch" ]; then
+                local days_ago=$(( (now_epoch - backup_epoch) / 86400 ))
+
+                if [ "$days_ago" -le 1 ]; then
+                    print_good "Last backup: ${BOLD}Today${NC}"
+                elif [ "$days_ago" -le 7 ]; then
+                    print_good "Last backup: ${BOLD}${days_ago} days ago${NC}"
+                elif [ "$days_ago" -le 30 ]; then
+                    print_warning "Last backup: ${BOLD}${days_ago} days ago${NC}"
+                    print_info "Consider running a backup soon"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                else
+                    print_bad "Last backup: ${BOLD}${days_ago} days ago${NC}"
+                    print_info "Your data is at risk! Connect your backup drive."
+                    TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+                    ALL_RECOMMENDATIONS+=("Last Time Machine backup was ${days_ago} days ago. Back up immediately.")
+                fi
+            fi
+        fi
+    else
+        print_bad "Time Machine: ${BOLD}NOT CONFIGURED${NC}"
+        print_info "You have NO backup. If your drive fails, your data is gone."
+        print_info "Set up in System Settings → General → Time Machine"
+        print_info "All you need is an external drive — macOS handles the rest."
+        TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+        ALL_RECOMMENDATIONS+=("No backup configured! Set up Time Machine to protect your data.")
+    fi
+
+    # Check iCloud Drive
+    if [ -d "$HOME/Library/Mobile Documents/com~apple~CloudDocs" ]; then
+        print_good "iCloud Drive: ${BOLD}Active${NC}"
+    else
+        print_info "iCloud Drive: Not detected"
+    fi
+}
+
+# ============================================================================
+# 12. SECURITY CHECK
+# ============================================================================
+
+check_security() {
+    print_header "SECURITY CHECK"
+
+    # Firewall
+    local fw_status
+    fw_status=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -o "enabled\|disabled")
+    if [ "$fw_status" = "enabled" ]; then
+        print_good "Firewall: ${BOLD}ON${NC}"
+    else
+        print_warning "Firewall: ${BOLD}OFF${NC}"
+        print_info "Turn on in System Settings → Network → Firewall"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        ALL_RECOMMENDATIONS+=("Firewall is off. Enable it in System Settings → Network → Firewall.")
+    fi
+
+    # FileVault
+    local fv_status
+    fv_status=$(fdesetup status 2>/dev/null)
+    if echo "$fv_status" | grep -q "On"; then
+        print_good "FileVault (disk encryption): ${BOLD}ON${NC}"
+    else
+        print_warning "FileVault (disk encryption): ${BOLD}OFF${NC}"
+        print_info "Your data is not encrypted. If the Mac is stolen, files are readable."
+        print_info "Enable in System Settings → Privacy & Security → FileVault"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        ALL_RECOMMENDATIONS+=("FileVault is off. Enable disk encryption to protect your data if the Mac is lost/stolen.")
+    fi
+
+    # System Integrity Protection (SIP)
+    local sip_status
+    sip_status=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled")
+    if [ "$sip_status" = "enabled" ]; then
+        print_good "System Integrity Protection: ${BOLD}ON${NC}"
+    elif [ "$sip_status" = "disabled" ]; then
+        print_bad "System Integrity Protection: ${BOLD}DISABLED${NC}"
+        print_info "SIP protects core macOS files from modification. Re-enable it."
+        TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+        ALL_RECOMMENDATIONS+=("SIP is disabled! This is a major security risk. Re-enable via Recovery Mode.")
+    fi
+
+    # Remote access
+    local remote_login
+    remote_login=$(systemsetup -getremotelogin 2>/dev/null | grep -o "On\|Off")
+    if [ "$remote_login" = "On" ]; then
+        print_warning "Remote Login (SSH): ${BOLD}ON${NC}"
+        print_info "Someone could SSH into this Mac. Turn off if not needed:"
+        print_info "System Settings → General → Sharing → Remote Login"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+    else
+        print_good "Remote Login (SSH): ${BOLD}OFF${NC}"
+    fi
+
+    local screen_sharing
+    screen_sharing=$(defaults read /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing 2>/dev/null | grep -o "true\|false" || echo "")
+    # Fallback check
+    if launchctl list 2>/dev/null | grep -q "com.apple.screensharing"; then
+        print_warning "Screen Sharing: ${BOLD}ON${NC}"
+        print_info "Turn off if not needed: System Settings → General → Sharing"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+    else
+        print_good "Screen Sharing: ${BOLD}OFF${NC}"
+    fi
+
+    # Gatekeeper
+    local gk_status
+    gk_status=$(spctl --status 2>/dev/null | grep -o "enabled\|disabled")
+    if [ "$gk_status" = "enabled" ]; then
+        print_good "Gatekeeper (app verification): ${BOLD}ON${NC}"
+    elif [ "$gk_status" = "disabled" ]; then
+        print_warning "Gatekeeper: ${BOLD}OFF${NC} — Apps are not being verified"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+    fi
+}
+
+# ============================================================================
+# 13. SAVE REPORT
+# ============================================================================
+
+save_report() {
+    print_header "SAVE REPORT"
+    echo ""
+    echo -e "  Would you like to save this diagnostic report to a file?"
+    echo -e "  ${DIM}Useful for sharing with someone helping you, or for your records.${NC}"
+    echo ""
+    read -p "  Save report to Desktop? (y/n): " save_choice
+    echo ""
+
+    if [[ "$save_choice" =~ ^[Yy] ]]; then
+        local report_file="$HOME/Desktop/Mac-Health-Report-$(date '+%Y-%m-%d-%H%M').txt"
+
+        # Re-run the whole diagnostic but capture output (strip color codes)
+        {
+            echo "============================================================"
+            echo "  MAC HEALTH CHECKUP REPORT"
+            echo "  $(date '+%B %d, %Y at %I:%M %p')"
+            echo "  ${MAC_MODEL} (${CHIP_TYPE} — ${MAC_CHIP})"
+            echo "  macOS ${MACOS_VERSION}"
+            echo "============================================================"
+            echo ""
+            echo "PROBLEMS: ${TOTAL_PROBLEMS}"
+            echo "WARNINGS: ${TOTAL_WARNINGS}"
+            echo ""
+            if [ ${#ALL_RECOMMENDATIONS[@]} -gt 0 ]; then
+                echo "RECOMMENDATIONS:"
+                for rec in "${ALL_RECOMMENDATIONS[@]}"; do
+                    echo "  • $rec"
+                done
+                echo ""
+            fi
+            echo "------------------------------------------------------------"
+            echo "  Full diagnostic was displayed on screen."
+            echo "  Re-run mac-checkup for the full interactive experience."
+            echo "------------------------------------------------------------"
+            echo ""
+            echo "QUICK DATA SNAPSHOT:"
+            echo ""
+            echo "--- Battery ---"
+            system_profiler SPPowerDataType 2>/dev/null | grep -E "Condition|Cycle Count|Maximum Capacity|Charging|Connected" | sed 's/^/  /'
+            echo ""
+            echo "--- Disk ---"
+            df -H / 2>/dev/null | tail -1 | awk '{printf "  Used: %s of %s (%s free)\n", $3, $2, $4}'
+            diskutil info disk0 2>/dev/null | grep "SMART" | sed 's/^/  /'
+            echo ""
+            echo "--- Memory ---"
+            echo "  Total RAM: ${TOTAL_RAM_GB} GB"
+            vm_stat 2>/dev/null | head -5 | sed 's/^/  /'
+            echo ""
+            echo "--- Top CPU ---"
+            ps aux -r 2>/dev/null | head -6 | awk '{printf "  %-20s CPU: %s%%  MEM: %s%%\n", $11, $3, $4}' | sed 's|.*/||'
+            echo ""
+            echo "--- Top Memory ---"
+            ps aux -m 2>/dev/null | head -6 | awk '{printf "  %-20s CPU: %s%%  MEM: %s%%  (%s MB)\n", $11, $3, $4, int($6/1024)}' | sed 's|.*/||'
+            echo ""
+            echo "--- Security ---"
+            /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | sed 's/^/  /'
+            fdesetup status 2>/dev/null | sed 's/^/  /'
+            csrutil status 2>/dev/null | sed 's/^/  /'
+            echo ""
+            echo "--- Backup ---"
+            tmutil destinationinfo 2>/dev/null | head -3 | sed 's/^/  /'
+            echo ""
+            echo "============================================================"
+            echo "  Generated by Mac Health Checkup"
+            echo "  https://github.com/Vibe-Marketer/mac-checkup"
+            echo "============================================================"
+        } > "$report_file"
+
+        print_good "Report saved to: ${BOLD}${report_file}${NC}"
+        print_info "You can AirDrop, email, or message this file to anyone"
+
+        # Open in Finder
+        open -R "$report_file" 2>/dev/null
+    else
+        print_info "Skipping report save"
+    fi
+}
+
+# ============================================================================
+# 14. FINAL SUMMARY
 # ============================================================================
 
 show_summary() {
@@ -1237,7 +1571,11 @@ main() {
     check_startup
     run_cleanup
     show_optimizations
+    check_wifi
+    check_backup
+    check_security
     check_stats
+    save_report
     show_summary
 }
 
