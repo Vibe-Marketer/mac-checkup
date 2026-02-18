@@ -1,0 +1,23 @@
+#!/bin/bash
+# Mac Health Checkup - App Bundle Launcher
+# This script opens Terminal.app and runs the Mac Health Checkup diagnostic script.
+
+# Derive the path to the script inside the .app bundle's Resources folder
+# $0 is the path to this launcher script inside Contents/MacOS/
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES_DIR="$(cd "$SCRIPT_DIR/../Resources" && pwd)"
+CHECKUP_SCRIPT="$RESOURCES_DIR/mac-checkup.sh"
+
+# Verify the script exists
+if [ ! -f "$CHECKUP_SCRIPT" ]; then
+    osascript -e 'display dialog "Error: mac-checkup.sh not found in the app bundle Resources folder." buttons {"OK"} default button "OK" with icon stop with title "Mac Health Checkup"'
+    exit 1
+fi
+
+# Open Terminal.app and run the checkup script
+osascript <<EOF
+tell application "Terminal"
+    activate
+    do script "\"$CHECKUP_SCRIPT\""
+end tell
+EOF

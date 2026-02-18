@@ -1,0 +1,14 @@
+# macOS system files
+.DS_Store
+
+# Binary releases go in GitHub Releases, not the repo
+*.dmg
+
+# Build artifacts
+/artifacts/
+
+# Claude Code
+.claude/
+
+# Script output files
+*.output
