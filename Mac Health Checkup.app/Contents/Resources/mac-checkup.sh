@@ -407,33 +407,36 @@ check_resource_hogs() {
     print_section "KNOWN HEAVY APPS"
 
     local found_hogs=false
-    declare -A hog_alternatives
-    hog_alternatives=(
-        ["Electron"]="Many apps use Electron (Chrome under the hood). Consider native alternatives."
-        ["Code Helper"]="VS Code / Cursor uses significant RAM. Zed Editor is a lightweight alternative."
-        ["Windsurf"]="Windsurf is Electron-based and heavy. Zed Editor + Claude Code is lighter."
-        ["com.docker"]="Docker Desktop uses lots of RAM even when idle. OrbStack is a lighter alternative."
-        ["Slack Helper"]="Slack's desktop app is an Electron memory hog. Try the web version instead."
-        ["Discord Helper"]="Discord desktop is Electron-based. The web version uses less memory."
-        ["Teams"]="Microsoft Teams is notoriously heavy. Web version or alternatives like Slack are lighter."
-        ["Spotify Helper"]="Spotify desktop is Electron. The web player at open.spotify.com uses less RAM."
-        ["figma_agent"]="Figma desktop is Electron. Figma in the browser uses less RAM."
-    )
+
+    # Parallel arrays for bash 3.2 compatibility (macOS ships ancient bash)
+    local hog_names=()
+    local hog_tips=()
+    hog_names+=("Electron");         hog_tips+=("Many apps use Electron (Chrome under the hood). Consider native alternatives.")
+    hog_names+=("Code Helper");      hog_tips+=("VS Code / Cursor uses significant RAM. Zed Editor is a lightweight alternative.")
+    hog_names+=("Windsurf");         hog_tips+=("Windsurf is Electron-based and heavy. Zed Editor + Claude Code is lighter.")
+    hog_names+=("com.docker");       hog_tips+=("Docker Desktop uses lots of RAM even when idle. OrbStack is a lighter alternative.")
+    hog_names+=("Slack Helper");     hog_tips+=("Slack's desktop app is an Electron memory hog. Try the web version instead.")
+    hog_names+=("Discord Helper");   hog_tips+=("Discord desktop is Electron-based. The web version uses less memory.")
+    hog_names+=("Teams");            hog_tips+=("Microsoft Teams is notoriously heavy. Web version or alternatives like Slack are lighter.")
+    hog_names+=("Spotify Helper");   hog_tips+=("Spotify desktop is Electron. The web player at open.spotify.com uses less RAM.")
+    hog_names+=("figma_agent");      hog_tips+=("Figma desktop is Electron. Figma in the browser uses less RAM.")
 
     local running_procs
     running_procs=$(ps aux 2>/dev/null)
 
-    for hog in "${!hog_alternatives[@]}"; do
+    local i=0
+    while [ $i -lt ${#hog_names[@]} ]; do
+        local hog="${hog_names[$i]}"
+        local tip="${hog_tips[$i]}"
         if echo "$running_procs" | grep -qi "$hog"; then
-            if [ "$found_hogs" = false ]; then
-                found_hogs=true
-            fi
+            found_hogs=true
             local mem_for_hog
             mem_for_hog=$(echo "$running_procs" | grep -i "$hog" | awk '{sum += $6} END {printf "%.0f", sum/1024}')
             print_warning "${BOLD}${hog}${NC} detected — using ~${mem_for_hog} MB RAM"
-            print_info "${DIM}${hog_alternatives[$hog]}${NC}"
+            print_info "${DIM}${tip}${NC}"
             echo ""
         fi
+        i=$((i + 1))
     done
 
     if [ "$found_hogs" = false ]; then
