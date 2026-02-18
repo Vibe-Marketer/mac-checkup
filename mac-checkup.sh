@@ -508,8 +508,12 @@ check_storage() {
     echo -e "  ${DIM}Scanning for files you can safely delete...${NC}"
     echo ""
 
-    # Category arrays: name, path, size_bytes
-    declare -a CLEAN_NAMES CLEAN_PATHS CLEAN_SIZES CLEAN_DESCRIPTIONS
+    # Category arrays (global so run_cleanup can access them)
+    CLEAN_NAMES=()
+    CLEAN_PATHS=()
+    CLEAN_SIZES=()
+    CLEAN_DESCRIPTIONS=()
+    CLEAN_ACTIONS=()   # cleanup method per category
 
     # 1. User caches
     local user_cache_size=$(dir_size_bytes "$HOME/Library/Caches")
@@ -517,6 +521,7 @@ check_storage() {
     CLEAN_PATHS+=("$HOME/Library/Caches")
     CLEAN_SIZES+=("$user_cache_size")
     CLEAN_DESCRIPTIONS+=("Temporary data apps store to load faster. Safe to delete — apps rebuild them.")
+    CLEAN_ACTIONS+=("clear_contents")
 
     # 2. User logs
     local user_log_size=$(dir_size_bytes "$HOME/Library/Logs")
@@ -524,6 +529,7 @@ check_storage() {
     CLEAN_PATHS+=("$HOME/Library/Logs")
     CLEAN_SIZES+=("$user_log_size")
     CLEAN_DESCRIPTIONS+=("Old log files from apps. Only useful for debugging — safe to delete.")
+    CLEAN_ACTIONS+=("delete_old_files")
 
     # 3. Trash
     local trash_size=$(dir_size_bytes "$HOME/.Trash")
@@ -531,6 +537,7 @@ check_storage() {
     CLEAN_PATHS+=("$HOME/.Trash")
     CLEAN_SIZES+=("$trash_size")
     CLEAN_DESCRIPTIONS+=("Files you already deleted but haven't emptied yet.")
+    CLEAN_ACTIONS+=("empty_trash")
 
     # 4. Downloads older than 30 days
     local old_downloads_size=0
@@ -541,6 +548,7 @@ check_storage() {
     CLEAN_PATHS+=("DOWNLOADS_OLD")
     CLEAN_SIZES+=("$old_downloads_size")
     CLEAN_DESCRIPTIONS+=("Files in Downloads older than 30 days. Review before deleting.")
+    CLEAN_ACTIONS+=("downloads_old")
 
     # 5. Browser caches (Chrome, Safari, Firefox, Edge, Arc, Brave)
     local browser_cache_size=0
@@ -562,6 +570,7 @@ check_storage() {
     CLEAN_PATHS+=("BROWSER_CACHES")
     CLEAN_SIZES+=("$browser_cache_size")
     CLEAN_DESCRIPTIONS+=("Cached web pages and data. Pages may load slightly slower temporarily.")
+    CLEAN_ACTIONS+=("browser_caches")
 
     # 6. Xcode derived data
     local xcode_size=0
@@ -573,6 +582,7 @@ check_storage() {
         CLEAN_PATHS+=("$HOME/Library/Developer/Xcode/DerivedData")
         CLEAN_SIZES+=("$xcode_size")
         CLEAN_DESCRIPTIONS+=("Old Xcode build artifacts. Rebuilds automatically when needed.")
+        CLEAN_ACTIONS+=("rm_rf")
     fi
 
     # 7. Homebrew cache
@@ -589,6 +599,7 @@ check_storage() {
         CLEAN_PATHS+=("$brew_cache_path")
         CLEAN_SIZES+=("$brew_cache_size")
         CLEAN_DESCRIPTIONS+=("Downloaded package files. Homebrew re-downloads if needed.")
+        CLEAN_ACTIONS+=("brew_cleanup")
     fi
 
     # 8. npm cache
@@ -601,6 +612,7 @@ check_storage() {
         CLEAN_PATHS+=("$HOME/.npm/_cacache")
         CLEAN_SIZES+=("$npm_cache_size")
         CLEAN_DESCRIPTIONS+=("Node.js package cache. Reinstalls re-download as needed.")
+        CLEAN_ACTIONS+=("npm_cleanup")
     fi
 
     # 9. pip cache
@@ -613,6 +625,7 @@ check_storage() {
         CLEAN_PATHS+=("$HOME/Library/Caches/pip")
         CLEAN_SIZES+=("$pip_cache_size")
         CLEAN_DESCRIPTIONS+=("Python package cache. Reinstalls re-download as needed.")
+        CLEAN_ACTIONS+=("rm_rf")
     fi
 
     # ── Display categories ──
@@ -646,14 +659,10 @@ check_storage() {
         print_good "Your Mac is already pretty clean!"
     fi
 
-    # Store for cleanup phase
-    export CLEAN_NAMES_STR=$(printf '%s\n' "${CLEAN_NAMES[@]}")
-    export CLEAN_PATHS_STR=$(printf '%s\n' "${CLEAN_PATHS[@]}")
-    export CLEAN_SIZES_STR=$(printf '%s\n' "${CLEAN_SIZES[@]}")
 }
 
 # ============================================================================
-# 5. CLEANUP (Interactive)
+# 5. CLEANUP (Interactive — pick what you want to clean)
 # ============================================================================
 
 run_cleanup() {
@@ -664,242 +673,173 @@ run_cleanup() {
         return
     fi
 
+    # Build display list (only items > 1 MB)
+    local display_indices=()
+    local display_count=0
+
     echo ""
-    echo -e "  Would you like to clean up junk files?"
-    echo ""
-    echo -e "  ${BOLD}1.${NC} Quick clean — Caches, logs, and Trash ${DIM}(safest)${NC}"
-    echo -e "  ${BOLD}2.${NC} Deep clean  — Everything above + browser caches, dev caches"
-    echo -e "  ${BOLD}3.${NC} Full clean  — All of the above + old Downloads (30+ days)"
-    echo -e "  ${BOLD}4.${NC} Skip        — Don't clean anything right now"
-    echo ""
-    read -p "  Choose (1-4): " clean_choice
+    echo -e "  ${BOLD}Select what to clean:${NC}"
     echo ""
 
-    case "$clean_choice" in
-        1)
-            echo -e "  ${BOLD}Quick Clean — Clearing caches, logs, and Trash...${NC}"
+    local i=0
+    while [ $i -lt ${#CLEAN_NAMES[@]} ]; do
+        local size=${CLEAN_SIZES[$i]}
+        if [ "$size" -gt 1048576 ] 2>/dev/null; then
+            display_count=$((display_count + 1))
+            display_indices+=($i)
+            local hr_size=$(human_size "$size")
+            printf "  ${BOLD}%2d.${NC} %-30s ${BOLD}%10s${NC}\n" "$display_count" "${CLEAN_NAMES[$i]}" "$hr_size"
+            echo -e "      ${DIM}${CLEAN_DESCRIPTIONS[$i]}${NC}"
             echo ""
-            local freed=0
+        fi
+        i=$((i + 1))
+    done
 
-            # Clear user caches
-            if [ -d "$HOME/Library/Caches" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Caches")
-                find "$HOME/Library/Caches" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
-                local after=$(dir_size_bytes "$HOME/Library/Caches")
-                local diff=$((before - after))
-                [ "$diff" -gt 0 ] && freed=$((freed + diff))
-                print_good "Cleared app caches ($(human_size $diff))"
+    if [ "$display_count" -eq 0 ]; then
+        print_good "Nothing significant to clean!"
+        return
+    fi
+
+    local total_hr=$(human_size "$TOTAL_RECLAIMABLE_BYTES")
+    echo -e "  ${BOLD}Total reclaimable: ~${total_hr}${NC}"
+    echo ""
+    echo -e "  Enter numbers to clean (e.g. ${CYAN}1,3,5${NC}), ${CYAN}all${NC}, or ${CYAN}skip${NC}:"
+    read -p "  > " selection
+    echo ""
+
+    if [ -z "$selection" ] || [ "$selection" = "skip" ] || [ "$selection" = "s" ]; then
+        print_info "Skipping cleanup"
+        return
+    fi
+
+    # Parse selection
+    local selected=()
+    if [ "$selection" = "all" ] || [ "$selection" = "a" ]; then
+        local j=0
+        while [ $j -lt $display_count ]; do
+            selected+=($j)
+            j=$((j + 1))
+        done
+    else
+        IFS=', ' read -ra nums <<< "$selection"
+        for num in "${nums[@]}"; do
+            num=$(echo "$num" | tr -d ' ')
+            if [ -n "$num" ] && [ "$num" -ge 1 ] && [ "$num" -le "$display_count" ] 2>/dev/null; then
+                selected+=($((num - 1)))
             fi
+        done
+    fi
 
-            # Clear user logs
-            if [ -d "$HOME/Library/Logs" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Logs")
-                find "$HOME/Library/Logs" -mindepth 1 -type f -mtime +7 -delete 2>/dev/null
-                find "$HOME/Library/Logs" -mindepth 1 -type d -empty -delete 2>/dev/null
-                local after=$(dir_size_bytes "$HOME/Library/Logs")
-                local diff=$((before - after))
-                [ "$diff" -gt 0 ] && freed=$((freed + diff))
-                print_good "Cleared old logs ($(human_size $diff))"
-            fi
+    if [ ${#selected[@]} -eq 0 ]; then
+        print_info "No valid items selected. Skipping."
+        return
+    fi
 
-            # Empty Trash
-            if [ -d "$HOME/.Trash" ]; then
-                local before=$(dir_size_bytes "$HOME/.Trash")
-                rm -rf "$HOME/.Trash/"* 2>/dev/null
-                rm -rf "$HOME/.Trash/".* 2>/dev/null
-                freed=$((freed + before))
-                print_good "Emptied Trash ($(human_size $before))"
-            fi
+    echo -e "  ${BOLD}Cleaning ${#selected[@]} item(s)...${NC}"
+    echo ""
 
-            echo ""
-            echo -e "  ${GREEN}${BOLD}Freed up ~$(human_size $freed)${NC}"
-            ;;
-        2)
-            echo -e "  ${BOLD}Deep Clean — Clearing everything safe...${NC}"
-            echo ""
-            local freed=0
+    local freed=0
 
-            # User caches
-            if [ -d "$HOME/Library/Caches" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Caches")
-                find "$HOME/Library/Caches" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
-                local after=$(dir_size_bytes "$HOME/Library/Caches")
-                local diff=$((before - after))
-                [ "$diff" -gt 0 ] && freed=$((freed + diff))
-                print_good "Cleared app caches ($(human_size $diff))"
-            fi
+    for sel in "${selected[@]}"; do
+        local real_idx=${display_indices[$sel]}
+        local name="${CLEAN_NAMES[$real_idx]}"
+        local path="${CLEAN_PATHS[$real_idx]}"
+        local action="${CLEAN_ACTIONS[$real_idx]}"
 
-            # Logs
-            if [ -d "$HOME/Library/Logs" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Logs")
-                find "$HOME/Library/Logs" -mindepth 1 -type f -mtime +7 -delete 2>/dev/null
-                find "$HOME/Library/Logs" -mindepth 1 -type d -empty -delete 2>/dev/null
-                local after=$(dir_size_bytes "$HOME/Library/Logs")
-                local diff=$((before - after))
-                [ "$diff" -gt 0 ] && freed=$((freed + diff))
-                print_good "Cleared old logs ($(human_size $diff))"
-            fi
-
-            # Trash
-            if [ -d "$HOME/.Trash" ]; then
-                local before=$(dir_size_bytes "$HOME/.Trash")
-                rm -rf "$HOME/.Trash/"* 2>/dev/null
-                rm -rf "$HOME/.Trash/".* 2>/dev/null
-                freed=$((freed + before))
-                print_good "Emptied Trash ($(human_size $before))"
-            fi
-
-            # Browser caches
-            for bp in \
-                "$HOME/Library/Caches/Google/Chrome" \
-                "$HOME/Library/Caches/com.apple.Safari" \
-                "$HOME/Library/Caches/Firefox" \
-                "$HOME/Library/Caches/com.microsoft.edgemac" \
-                "$HOME/Library/Caches/company.thebrowser.Browser" \
-                "$HOME/Library/Caches/com.brave.Browser"; do
-                if [ -d "$bp" ]; then
-                    local before=$(dir_size_bytes "$bp")
-                    rm -rf "$bp" 2>/dev/null
-                    freed=$((freed + before))
-                    local bname=$(echo "$bp" | sed 's|.*/||')
-                    print_good "Cleared browser cache: $bname ($(human_size $before))"
-                fi
-            done
-
-            # Xcode
-            if [ -d "$HOME/Library/Developer/Xcode/DerivedData" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Developer/Xcode/DerivedData")
-                rm -rf "$HOME/Library/Developer/Xcode/DerivedData" 2>/dev/null
-                freed=$((freed + before))
-                print_good "Cleared Xcode build data ($(human_size $before))"
-            fi
-
-            # Homebrew cache
-            if command -v brew &>/dev/null; then
-                local brew_cache=$(brew --cache 2>/dev/null)
-                if [ -d "$brew_cache" ]; then
-                    local before=$(dir_size_bytes "$brew_cache")
-                    brew cleanup --prune=all 2>/dev/null
-                    local after=$(dir_size_bytes "$brew_cache")
+        case "$action" in
+            clear_contents)
+                if [ -d "$path" ]; then
+                    local before=$(dir_size_bytes "$path")
+                    find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+                    local after=$(dir_size_bytes "$path")
                     local diff=$((before - after))
                     [ "$diff" -gt 0 ] && freed=$((freed + diff))
-                    print_good "Cleaned Homebrew cache ($(human_size $diff))"
+                    print_good "Cleared ${name} ($(human_size $diff))"
                 fi
-            fi
-
-            # npm cache
-            if [ -d "$HOME/.npm/_cacache" ]; then
-                local before=$(dir_size_bytes "$HOME/.npm/_cacache")
-                npm cache clean --force 2>/dev/null
-                freed=$((freed + before))
-                print_good "Cleared npm cache ($(human_size $before))"
-            fi
-
-            # pip cache
-            if [ -d "$HOME/Library/Caches/pip" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Caches/pip")
-                rm -rf "$HOME/Library/Caches/pip" 2>/dev/null
-                freed=$((freed + before))
-                print_good "Cleared pip cache ($(human_size $before))"
-            fi
-
-            echo ""
-            echo -e "  ${GREEN}${BOLD}Freed up ~$(human_size $freed)${NC}"
-            ;;
-        3)
-            echo -e "  ${BOLD}Full Clean — Including old Downloads...${NC}"
-            echo ""
-            echo -e "  ${YELLOW}${WARN}${NC}  This will delete files in Downloads older than 30 days."
-            echo -e "  ${DIM}  Make sure anything important is saved elsewhere first.${NC}"
-            echo ""
-            read -p "  Are you sure? (y/n): " confirm_full
-            echo ""
-
-            if [[ ! "$confirm_full" =~ ^[Yy] ]]; then
-                print_info "Skipping full clean. Running deep clean instead..."
-                clean_choice=2
-                # Recurse with deep clean (simplified: just do the same as option 2)
-            fi
-
-            local freed=0
-
-            # All the deep clean items first
-            # Caches
-            if [ -d "$HOME/Library/Caches" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Caches")
-                find "$HOME/Library/Caches" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
-                local after=$(dir_size_bytes "$HOME/Library/Caches")
-                local diff=$((before - after))
-                [ "$diff" -gt 0 ] && freed=$((freed + diff))
-                print_good "Cleared app caches ($(human_size $diff))"
-            fi
-
-            # Logs
-            if [ -d "$HOME/Library/Logs" ]; then
-                local before=$(dir_size_bytes "$HOME/Library/Logs")
-                find "$HOME/Library/Logs" -mindepth 1 -type f -mtime +7 -delete 2>/dev/null
-                find "$HOME/Library/Logs" -mindepth 1 -type d -empty -delete 2>/dev/null
-                local after=$(dir_size_bytes "$HOME/Library/Logs")
-                local diff=$((before - after))
-                [ "$diff" -gt 0 ] && freed=$((freed + diff))
-                print_good "Cleared old logs ($(human_size $diff))"
-            fi
-
-            # Trash
-            if [ -d "$HOME/.Trash" ]; then
-                local before=$(dir_size_bytes "$HOME/.Trash")
-                rm -rf "$HOME/.Trash/"* 2>/dev/null
-                rm -rf "$HOME/.Trash/".* 2>/dev/null
-                freed=$((freed + before))
-                print_good "Emptied Trash ($(human_size $before))"
-            fi
-
-            # Browser caches
-            for bp in \
-                "$HOME/Library/Caches/Google/Chrome" \
-                "$HOME/Library/Caches/com.apple.Safari" \
-                "$HOME/Library/Caches/Firefox" \
-                "$HOME/Library/Caches/com.microsoft.edgemac" \
-                "$HOME/Library/Caches/company.thebrowser.Browser" \
-                "$HOME/Library/Caches/com.brave.Browser"; do
-                if [ -d "$bp" ]; then
-                    local before=$(dir_size_bytes "$bp")
-                    rm -rf "$bp" 2>/dev/null
+                ;;
+            delete_old_files)
+                if [ -d "$path" ]; then
+                    local before=$(dir_size_bytes "$path")
+                    find "$path" -mindepth 1 -type f -mtime +7 -delete 2>/dev/null
+                    find "$path" -mindepth 1 -type d -empty -delete 2>/dev/null
+                    local after=$(dir_size_bytes "$path")
+                    local diff=$((before - after))
+                    [ "$diff" -gt 0 ] && freed=$((freed + diff))
+                    print_good "Cleared ${name} ($(human_size $diff))"
+                fi
+                ;;
+            empty_trash)
+                if [ -d "$path" ]; then
+                    local before=$(dir_size_bytes "$path")
+                    rm -rf "$path/"* 2>/dev/null
+                    rm -rf "$path/".[!.]* 2>/dev/null
                     freed=$((freed + before))
+                    print_good "Emptied ${name} ($(human_size $before))"
                 fi
-            done
-            print_good "Cleared all browser caches"
+                ;;
+            downloads_old)
+                echo -e "  ${YELLOW}${WARN}${NC}  This will delete files in Downloads older than 30 days."
+                read -p "  Are you sure? (y/n): " confirm_dl
+                if [[ "$confirm_dl" =~ ^[Yy] ]]; then
+                    local dl_freed=0
+                    while IFS= read -r -d '' file; do
+                        local fsize=$(stat -f%z "$file" 2>/dev/null)
+                        dl_freed=$((dl_freed + fsize))
+                        rm -f "$file" 2>/dev/null
+                    done < <(find "$HOME/Downloads" -maxdepth 1 -type f -mtime +30 -print0 2>/dev/null)
+                    freed=$((freed + dl_freed))
+                    print_good "Removed ${name} ($(human_size $dl_freed))"
+                else
+                    print_info "Skipped ${name}"
+                fi
+                ;;
+            browser_caches)
+                for bp in \
+                    "$HOME/Library/Caches/Google/Chrome" \
+                    "$HOME/Library/Caches/com.apple.Safari" \
+                    "$HOME/Library/Caches/Firefox" \
+                    "$HOME/Library/Caches/com.microsoft.edgemac" \
+                    "$HOME/Library/Caches/company.thebrowser.Browser" \
+                    "$HOME/Library/Caches/com.brave.Browser"; do
+                    if [ -d "$bp" ]; then
+                        local bp_size=$(dir_size_bytes "$bp")
+                        rm -rf "$bp" 2>/dev/null
+                        freed=$((freed + bp_size))
+                    fi
+                done
+                print_good "Cleared ${name}"
+                ;;
+            brew_cleanup)
+                if command -v brew &>/dev/null; then
+                    local before=$(dir_size_bytes "$path")
+                    brew cleanup --prune=all 2>/dev/null
+                    local after=$(dir_size_bytes "$path")
+                    local diff=$((before - after))
+                    [ "$diff" -gt 0 ] && freed=$((freed + diff))
+                    print_good "Cleaned ${name} ($(human_size $diff))"
+                fi
+                ;;
+            npm_cleanup)
+                if [ -d "$path" ]; then
+                    local before=$(dir_size_bytes "$path")
+                    npm cache clean --force 2>/dev/null
+                    freed=$((freed + before))
+                    print_good "Cleared ${name} ($(human_size $before))"
+                fi
+                ;;
+            rm_rf)
+                if [ -d "$path" ]; then
+                    local before=$(dir_size_bytes "$path")
+                    rm -rf "$path" 2>/dev/null
+                    freed=$((freed + before))
+                    print_good "Cleared ${name} ($(human_size $before))"
+                fi
+                ;;
+        esac
+    done
 
-            # Dev caches
-            [ -d "$HOME/Library/Developer/Xcode/DerivedData" ] && {
-                local before=$(dir_size_bytes "$HOME/Library/Developer/Xcode/DerivedData")
-                rm -rf "$HOME/Library/Developer/Xcode/DerivedData" 2>/dev/null
-                freed=$((freed + before))
-            }
-            command -v brew &>/dev/null && brew cleanup --prune=all 2>/dev/null
-            [ -d "$HOME/.npm/_cacache" ] && { npm cache clean --force 2>/dev/null; }
-            [ -d "$HOME/Library/Caches/pip" ] && rm -rf "$HOME/Library/Caches/pip" 2>/dev/null
-            print_good "Cleared developer caches"
-
-            # Old downloads (only if confirmed)
-            if [[ "$confirm_full" =~ ^[Yy] ]]; then
-                local dl_freed=0
-                while IFS= read -r -d '' file; do
-                    local fsize=$(stat -f%z "$file" 2>/dev/null)
-                    dl_freed=$((dl_freed + fsize))
-                    rm -f "$file" 2>/dev/null
-                done < <(find "$HOME/Downloads" -maxdepth 1 -type f -mtime +30 -print0 2>/dev/null)
-                freed=$((freed + dl_freed))
-                print_good "Removed old Downloads ($(human_size $dl_freed))"
-            fi
-
-            echo ""
-            echo -e "  ${GREEN}${BOLD}Freed up ~$(human_size $freed)${NC}"
-            ;;
-        *)
-            print_info "Skipping cleanup"
-            ;;
-    esac
+    echo ""
+    echo -e "  ${GREEN}${BOLD}Freed up ~$(human_size $freed)${NC}"
 }
 
 # ============================================================================
@@ -911,13 +851,11 @@ check_stale_apps() {
     print_info "Checking for apps you haven't opened in 6+ months..."
     echo ""
 
-    local stale_count=0
-    local stale_total_size=0
     local six_months_ago
     six_months_ago=$(date -v-6m +%s 2>/dev/null)
 
-    # Collect stale apps into array for sorting
-    local stale_apps=()
+    # Collect stale apps (sorted by size) into global arrays
+    local stale_raw=()
 
     for app in /Applications/*.app; do
         [ -d "$app" ] || continue
@@ -947,30 +885,101 @@ check_stale_apps() {
                 local app_size_hr=$(human_size "$app_size_bytes")
                 local months_ago=$(( ($(date +%s) - last_used_epoch) / 2592000 ))
 
-                stale_apps+=("${app_size_bytes}|${app_name}|${months_ago}|${app_size_hr}")
-                stale_total_size=$((stale_total_size + app_size_bytes))
-                stale_count=$((stale_count + 1))
+                stale_raw+=("${app_size_bytes}|${app_name}|${months_ago}|${app_size_hr}|${app}")
             fi
         fi
     done
 
-    # Sort by size (largest first) and display
-    if [ "$stale_count" -gt 0 ]; then
-        printf '%s\n' "${stale_apps[@]}" | sort -t'|' -k1 -nr | head -15 | while IFS='|' read -r size name months hr_size; do
-            if [ "$size" -gt 104857600 ] 2>/dev/null; then  # > 100 MB
-                print_warning "${BOLD}${name}${NC} — ${hr_size}, unused for ${months} months"
+    # Sort by size (largest first), store in parallel arrays
+    local stale_names=()
+    local stale_paths=()
+    local stale_sizes_hr=()
+    local stale_months=()
+    local stale_sizes=()
+
+    if [ ${#stale_raw[@]} -gt 0 ]; then
+        local sorted
+        sorted=$(printf '%s\n' "${stale_raw[@]}" | sort -t'|' -k1 -nr | head -15)
+
+        while IFS='|' read -r size name months hr_size path; do
+            [ -z "$name" ] && continue
+            stale_names+=("$name")
+            stale_paths+=("$path")
+            stale_sizes_hr+=("$hr_size")
+            stale_months+=("$months")
+            stale_sizes+=("$size")
+        done <<< "$sorted"
+    fi
+
+    if [ ${#stale_names[@]} -gt 0 ]; then
+        local total_size=0
+        local i=0
+        while [ $i -lt ${#stale_names[@]} ]; do
+            local num=$((i + 1))
+            total_size=$((total_size + ${stale_sizes[$i]}))
+            if [ "${stale_sizes[$i]}" -gt 104857600 ] 2>/dev/null; then
+                printf "  ${YELLOW}${WARN}${NC}  ${BOLD}%2d.${NC} %-30s %10s  ${DIM}(unused %s months)${NC}\n" "$num" "${stale_names[$i]}" "${stale_sizes_hr[$i]}" "${stale_months[$i]}"
             else
-                print_info "${name} — ${hr_size}, unused for ${months} months"
+                printf "  ${DIM}→${NC}  ${BOLD}%2d.${NC} %-30s %10s  ${DIM}(unused %s months)${NC}\n" "$num" "${stale_names[$i]}" "${stale_sizes_hr[$i]}" "${stale_months[$i]}"
             fi
+            i=$((i + 1))
         done
 
         echo ""
-        local total_hr=$(human_size "$stale_total_size")
-        echo -e "  ${DIM}${stale_count} apps haven't been used in 6+ months (${total_hr} total)${NC}"
-        echo -e "  ${DIM}To uninstall: drag the app from /Applications to Trash${NC}"
+        local total_hr=$(human_size "$total_size")
+        echo -e "  ${DIM}${#stale_names[@]} unused apps — ~${total_hr} total${NC}"
 
-        if [ "$stale_total_size" -gt 1073741824 ]; then  # > 1 GB
-            ALL_RECOMMENDATIONS+=("You have ${stale_count} unused apps taking up ~${total_hr}. Consider removing ones you don't need.")
+        if [ "$total_size" -gt 1073741824 ]; then
+            ALL_RECOMMENDATIONS+=("You have ${#stale_names[@]} unused apps taking up ~${total_hr}. Consider removing ones you don't need.")
+        fi
+
+        echo ""
+        echo -e "  Enter numbers to move to Trash (e.g. ${CYAN}1,3,5${NC}), ${CYAN}all${NC}, or ${CYAN}skip${NC}:"
+        read -p "  > " selection
+        echo ""
+
+        if [ -n "$selection" ] && [ "$selection" != "skip" ] && [ "$selection" != "s" ]; then
+            local selected=()
+            if [ "$selection" = "all" ] || [ "$selection" = "a" ]; then
+                local j=0
+                while [ $j -lt ${#stale_names[@]} ]; do
+                    selected+=($j)
+                    j=$((j + 1))
+                done
+            else
+                IFS=', ' read -ra nums <<< "$selection"
+                for num in "${nums[@]}"; do
+                    num=$(echo "$num" | tr -d ' ')
+                    if [ -n "$num" ] && [ "$num" -ge 1 ] && [ "$num" -le ${#stale_names[@]} ] 2>/dev/null; then
+                        selected+=($((num - 1)))
+                    fi
+                done
+            fi
+
+            local removed_count=0
+            local removed_size=0
+            for idx in "${selected[@]}"; do
+                local app_path="${stale_paths[$idx]}"
+                local app_name="${stale_names[$idx]}"
+                if [ -d "$app_path" ]; then
+                    mv "$app_path" "$HOME/.Trash/" 2>/dev/null
+                    if [ $? -eq 0 ]; then
+                        print_good "Moved ${app_name} to Trash"
+                        removed_count=$((removed_count + 1))
+                        removed_size=$((removed_size + ${stale_sizes[$idx]}))
+                    else
+                        print_bad "Could not move ${app_name} (may need admin rights)"
+                    fi
+                fi
+            done
+
+            if [ "$removed_count" -gt 0 ]; then
+                echo ""
+                echo -e "  ${GREEN}${BOLD}Moved ${removed_count} app(s) to Trash (~$(human_size $removed_size))${NC}"
+                echo -e "  ${DIM}Empty Trash to fully reclaim the space${NC}"
+            fi
+        else
+            print_info "Skipping — no apps removed"
         fi
     else
         print_good "No stale apps found — you're using what you have!"
@@ -986,11 +995,12 @@ check_startup() {
     print_info "Things that launch automatically when you log in..."
     echo ""
 
-    local startup_count=0
+    # Collect all startup items into arrays
+    local item_names=()
+    local item_types=()     # "login" or "agent"
+    local item_details=()   # login item name or plist path
 
     # ── Login Items (user-configured) ──
-    print_section "LOGIN ITEMS"
-
     local login_items
     login_items=$(osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null)
 
@@ -999,17 +1009,13 @@ check_startup() {
         for item in "${items[@]}"; do
             item=$(echo "$item" | xargs)
             [ -z "$item" ] && continue
-            print_info "$item"
-            startup_count=$((startup_count + 1))
+            item_names+=("$item")
+            item_types+=("login")
+            item_details+=("$item")
         done
-    else
-        print_good "No login items configured"
     fi
 
     # ── Launch Agents (background services) ──
-    print_section "BACKGROUND SERVICES"
-
-    local agent_count=0
     if [ -d "$HOME/Library/LaunchAgents" ]; then
         for plist in "$HOME/Library/LaunchAgents"/*.plist; do
             [ -f "$plist" ] || continue
@@ -1026,28 +1032,96 @@ check_startup() {
                 continue
             fi
 
-            # Try to get a friendly name
             local friendly_name
             friendly_name=$(echo "$label" | sed 's/com\.//;s/\./ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')
 
-            print_info "${friendly_name} ${DIM}(${label})${NC}"
-            agent_count=$((agent_count + 1))
-            startup_count=$((startup_count + 1))
+            item_names+=("$friendly_name")
+            item_types+=("agent")
+            item_details+=("$plist")
         done
     fi
 
-    if [ "$agent_count" -eq 0 ]; then
-        print_good "No third-party background services"
-    fi
+    local startup_count=${#item_names[@]}
 
-    echo ""
-    if [ "$startup_count" -gt 8 ]; then
-        print_warning "${BOLD}${startup_count} things launch at startup${NC} — that's a lot"
-        print_info "Consider removing items you don't need from System Settings → General → Login Items"
-        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
-        ALL_RECOMMENDATIONS+=("You have ${startup_count} startup items. Reducing these will make your Mac boot faster.")
-    elif [ "$startup_count" -gt 0 ]; then
-        print_info "${startup_count} startup items — reasonable"
+    if [ "$startup_count" -gt 0 ]; then
+        local i=0
+        while [ $i -lt $startup_count ]; do
+            local num=$((i + 1))
+            local type_label=""
+            if [ "${item_types[$i]}" = "login" ]; then
+                type_label="Login Item"
+            else
+                type_label="Background"
+            fi
+            printf "  ${BOLD}%2d.${NC} %-35s ${DIM}(%s)${NC}\n" "$num" "${item_names[$i]}" "$type_label"
+            i=$((i + 1))
+        done
+
+        echo ""
+        if [ "$startup_count" -gt 8 ]; then
+            print_warning "${BOLD}${startup_count} things launch at startup${NC} — that's a lot"
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+            ALL_RECOMMENDATIONS+=("You have ${startup_count} startup items. Reducing these will make your Mac boot faster.")
+        else
+            print_info "${startup_count} startup items"
+        fi
+
+        echo ""
+        echo -e "  Enter numbers to disable (e.g. ${CYAN}1,3,5${NC}), ${CYAN}all${NC}, or ${CYAN}skip${NC}:"
+        read -p "  > " selection
+        echo ""
+
+        if [ -n "$selection" ] && [ "$selection" != "skip" ] && [ "$selection" != "s" ]; then
+            local selected=()
+            if [ "$selection" = "all" ] || [ "$selection" = "a" ]; then
+                local j=0
+                while [ $j -lt $startup_count ]; do
+                    selected+=($j)
+                    j=$((j + 1))
+                done
+            else
+                IFS=', ' read -ra nums <<< "$selection"
+                for num in "${nums[@]}"; do
+                    num=$(echo "$num" | tr -d ' ')
+                    if [ -n "$num" ] && [ "$num" -ge 1 ] && [ "$num" -le "$startup_count" ] 2>/dev/null; then
+                        selected+=($((num - 1)))
+                    fi
+                done
+            fi
+
+            local disabled_count=0
+            for idx in "${selected[@]}"; do
+                local name="${item_names[$idx]}"
+                local type="${item_types[$idx]}"
+                local detail="${item_details[$idx]}"
+
+                if [ "$type" = "login" ]; then
+                    osascript -e "tell application \"System Events\" to delete login item \"$detail\"" 2>/dev/null
+                    if [ $? -eq 0 ]; then
+                        print_good "Removed login item: ${name}"
+                        disabled_count=$((disabled_count + 1))
+                    else
+                        print_bad "Could not remove: ${name}"
+                    fi
+                elif [ "$type" = "agent" ]; then
+                    launchctl unload -w "$detail" 2>/dev/null
+                    if [ $? -eq 0 ]; then
+                        print_good "Disabled: ${name}"
+                        disabled_count=$((disabled_count + 1))
+                    else
+                        print_bad "Could not disable: ${name}"
+                    fi
+                fi
+            done
+
+            if [ "$disabled_count" -gt 0 ]; then
+                echo ""
+                echo -e "  ${GREEN}${BOLD}Disabled ${disabled_count} startup item(s)${NC}"
+                echo -e "  ${DIM}Changes take effect on next login/restart${NC}"
+            fi
+        else
+            print_info "Skipping — no startup items changed"
+        fi
     else
         print_good "Clean startup — nothing unnecessary launching"
     fi
