@@ -628,6 +628,130 @@ check_storage() {
         CLEAN_ACTIONS+=("rm_rf")
     fi
 
+    # ── NEW CATEGORY: iOS Device Backups ──
+    local ios_backup_size=0
+    if [ -d "$HOME/Library/Application Support/MobileSync/Backup" ]; then
+        ios_backup_size=$(dir_size_bytes "$HOME/Library/Application Support/MobileSync/Backup")
+    fi
+    if [ "$ios_backup_size" -gt 0 ] 2>/dev/null; then
+        CLEAN_NAMES+=("iOS Device Backups")
+        CLEAN_PATHS+=("$HOME/Library/Application Support/MobileSync/Backup")
+        CLEAN_SIZES+=("$ios_backup_size")
+        CLEAN_DESCRIPTIONS+=("iPhone/iPad backups stored locally. Each can be 10-50 GB. Remove backups for devices you no longer own.")
+        CLEAN_ACTIONS+=("rm_rf")
+    fi
+
+    # ── NEW CATEGORY: Mail Attachment Cache ──
+    local mail_attach_size=0
+    local mail_v_dir
+    for mail_v_dir in "$HOME"/Library/Mail/V*; do
+        if [ -d "$mail_v_dir/MailData/Attachments" ]; then
+            local _s
+            _s=$(dir_size_bytes "$mail_v_dir/MailData/Attachments")
+            mail_attach_size=$((mail_attach_size + _s))
+        fi
+        if [ -d "$mail_v_dir/MailData/EmbeddedData" ]; then
+            local _s
+            _s=$(dir_size_bytes "$mail_v_dir/MailData/EmbeddedData")
+            mail_attach_size=$((mail_attach_size + _s))
+        fi
+    done
+    if [ "$mail_attach_size" -gt 0 ] 2>/dev/null; then
+        CLEAN_NAMES+=("Mail Attachment Cache")
+        CLEAN_PATHS+=("MAIL_CLEANUP")
+        CLEAN_SIZES+=("$mail_attach_size")
+        CLEAN_DESCRIPTIONS+=("Downloaded email attachments cached by Mail.app. Safe to clear — re-downloads from server if needed.")
+        CLEAN_ACTIONS+=("mail_cleanup")
+    fi
+
+    # ── NEW CATEGORY: Docker Images & Volumes ──
+    local docker_size=0
+    if command -v docker &>/dev/null; then
+        local docker_vm_dir="$HOME/Library/Containers/com.docker.docker/Data/vms"
+        if [ -d "$docker_vm_dir" ]; then
+            docker_size=$(dir_size_bytes "$docker_vm_dir")
+        fi
+        if docker system df &>/dev/null 2>&1; then
+            local docker_df_bytes
+            docker_df_bytes=$(docker system df --format '{{.Size}}' 2>/dev/null | awk '
+                function to_bytes(s,   n, u) {
+                    n = s + 0; u = substr(s, length(s) - 1)
+                    if (u == "GB") return int(n * 1073741824)
+                    if (u == "MB") return int(n * 1048576)
+                    if (u == "kB") return int(n * 1024)
+                    return int(n)
+                }
+                { total += to_bytes($1) }
+                END { print (total > 0 ? total : 0) }
+            ')
+            if [ -n "$docker_df_bytes" ] && [ "$docker_df_bytes" -gt "$docker_size" ] 2>/dev/null; then
+                docker_size=$docker_df_bytes
+            fi
+        fi
+    fi
+    if [ "$docker_size" -gt 0 ] 2>/dev/null; then
+        CLEAN_NAMES+=("Docker Images & Volumes")
+        CLEAN_PATHS+=("DOCKER_CLEANUP")
+        CLEAN_SIZES+=("$docker_size")
+        CLEAN_DESCRIPTIONS+=("Unused Docker images, containers, and volumes. Reclaim space safely.")
+        CLEAN_ACTIONS+=("docker_cleanup")
+    fi
+
+    # ── NEW CATEGORY: Time Machine Local Snapshots ──
+    local tm_snapshot_count=0
+    tm_snapshot_count=$(tmutil listlocalsnapshots / 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$tm_snapshot_count" -gt 0 ] 2>/dev/null; then
+        local tm_snapshot_size=$((tm_snapshot_count * 524288000))
+        CLEAN_NAMES+=("Time Machine Local Snapshots")
+        CLEAN_PATHS+=("TM_SNAPSHOT_CLEANUP")
+        CLEAN_SIZES+=("$tm_snapshot_size")
+        CLEAN_DESCRIPTIONS+=("${tm_snapshot_count} local snapshot(s) on this disk. Safe to delete — full backups remain on your TM drive.")
+        CLEAN_ACTIONS+=("tm_snapshot_cleanup")
+    fi
+
+    # ── NEW CATEGORY: Language Files (.lproj) ──
+    local lproj_size=0
+    if [ -d "/Applications" ]; then
+        lproj_size=$(find /Applications -name "*.lproj" \
+            ! -name "en.lproj" ! -name "Base.lproj" ! -name "English.lproj" \
+            -type d 2>/dev/null -exec du -sk {} + 2>/dev/null \
+            | awk '{s += $1} END {print s * 1024 + 0}')
+    fi
+    if [ "$lproj_size" -gt 0 ] 2>/dev/null; then
+        CLEAN_NAMES+=("Language Files (.lproj)")
+        CLEAN_PATHS+=("LANGUAGE_CLEANUP")
+        CLEAN_SIZES+=("$lproj_size")
+        CLEAN_DESCRIPTIONS+=("Non-English language resources in apps. Removing saves space but cannot be undone without reinstalling.")
+        CLEAN_ACTIONS+=("language_cleanup")
+    fi
+
+    # ── NEW CATEGORY: .DS_Store Files ──
+    local dsstore_size=0
+    local dsstore_count=0
+    dsstore_size=$(find "$HOME" -name ".DS_Store" -type f 2>/dev/null \
+        -exec stat -f%z {} + 2>/dev/null | awk '{s += $1} END {print s + 0}')
+    dsstore_count=$(find "$HOME" -name ".DS_Store" -type f 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$dsstore_size" -gt 0 ] 2>/dev/null; then
+        CLEAN_NAMES+=(".DS_Store Files")
+        CLEAN_PATHS+=("DSSTORE_CLEANUP")
+        CLEAN_SIZES+=("$dsstore_size")
+        CLEAN_DESCRIPTIONS+=("${dsstore_count} hidden folder-metadata files. Safe to delete — macOS recreates them.")
+        CLEAN_ACTIONS+=("dsstore_cleanup")
+    fi
+
+    # ── NEW CATEGORY: Old iOS Simulators ──
+    local simulator_size=0
+    if [ -d "$HOME/Library/Developer/CoreSimulator/Devices" ]; then
+        simulator_size=$(dir_size_bytes "$HOME/Library/Developer/CoreSimulator/Devices")
+    fi
+    if [ "$simulator_size" -gt 0 ] 2>/dev/null; then
+        CLEAN_NAMES+=("Old iOS Simulators")
+        CLEAN_PATHS+=("$HOME/Library/Developer/CoreSimulator/Devices")
+        CLEAN_SIZES+=("$simulator_size")
+        CLEAN_DESCRIPTIONS+=("iOS Simulator images for Xcode developers. Safe to remove if not actively developing.")
+        CLEAN_ACTIONS+=("rm_rf")
+    fi
+
     # ── Display categories ──
     local total_reclaimable=0
     local has_cleanable=false
@@ -834,6 +958,72 @@ run_cleanup() {
                     freed=$((freed + before))
                     print_good "Cleared ${name} ($(human_size $before))"
                 fi
+                ;;
+            mail_cleanup)
+                local mc_freed=0
+                local mc_v_dir
+                for mc_v_dir in "$HOME"/Library/Mail/V*; do
+                    if [ -d "$mc_v_dir/MailData/Attachments" ]; then
+                        local mc_s=$(dir_size_bytes "$mc_v_dir/MailData/Attachments")
+                        rm -rf "$mc_v_dir/MailData/Attachments" 2>/dev/null
+                        mc_freed=$((mc_freed + mc_s))
+                    fi
+                    if [ -d "$mc_v_dir/MailData/EmbeddedData" ]; then
+                        local mc_s=$(dir_size_bytes "$mc_v_dir/MailData/EmbeddedData")
+                        rm -rf "$mc_v_dir/MailData/EmbeddedData" 2>/dev/null
+                        mc_freed=$((mc_freed + mc_s))
+                    fi
+                done
+                freed=$((freed + mc_freed))
+                print_good "Cleared ${name} ($(human_size $mc_freed))"
+                ;;
+            docker_cleanup)
+                if command -v docker &>/dev/null && docker system df &>/dev/null 2>&1; then
+                    echo -e "  ${YELLOW}${WARN}${NC}  This will remove ALL unused Docker images, containers, and volumes."
+                    read -p "  Are you sure? (y/n): " confirm_docker
+                    if [[ "$confirm_docker" =~ ^[Yy] ]]; then
+                        docker system prune -af --volumes 2>/dev/null
+                        print_good "Docker cleanup complete"
+                    else
+                        print_info "Skipped Docker cleanup"
+                    fi
+                else
+                    print_info "Docker daemon not running — skipping"
+                fi
+                ;;
+            tm_snapshot_cleanup)
+                local snap_date
+                snap_date=$(date +%Y%m%d%H%M%S)
+                tmutil thinlocalsnapshots / "$snap_date" 1 2>/dev/null
+                print_good "Time Machine snapshot thinning requested"
+                print_info "macOS will reclaim space in the background"
+                ;;
+            language_cleanup)
+                echo -e "  ${YELLOW}${WARN}${NC}  This removes non-English language files from apps."
+                echo -e "  ${YELLOW}${WARN}${NC}  Cannot be undone without reinstalling apps."
+                read -p "  Are you sure? (y/n): " confirm_lang
+                if [[ "$confirm_lang" =~ ^[Yy] ]]; then
+                    local lang_freed=0
+                    lang_freed=$(find /Applications -name "*.lproj" \
+                        ! -name "en.lproj" ! -name "Base.lproj" ! -name "English.lproj" \
+                        -type d 2>/dev/null -exec du -sk {} + 2>/dev/null \
+                        | awk '{s += $1} END {print s * 1024 + 0}')
+                    find /Applications -name "*.lproj" \
+                        ! -name "en.lproj" ! -name "Base.lproj" ! -name "English.lproj" \
+                        -type d -exec rm -rf {} + 2>/dev/null
+                    freed=$((freed + lang_freed))
+                    print_good "Cleared ${name} ($(human_size $lang_freed))"
+                else
+                    print_info "Skipped language cleanup"
+                fi
+                ;;
+            dsstore_cleanup)
+                local ds_freed=0
+                ds_freed=$(find "$HOME" -name ".DS_Store" -type f 2>/dev/null \
+                    -exec stat -f%z {} + 2>/dev/null | awk '{s += $1} END {print s + 0}')
+                find "$HOME" -name ".DS_Store" -type f -delete 2>/dev/null
+                freed=$((freed + ds_freed))
+                print_good "Cleared ${name} ($(human_size $ds_freed))"
                 ;;
         esac
     done
@@ -1586,7 +1776,1736 @@ save_report() {
 }
 
 # ============================================================================
-# 14. FINAL SUMMARY
+# 14. LARGE FILE FINDER
+# ============================================================================
+
+find_large_files() {
+    print_header "LARGE FILE FINDER"
+
+    local tmp_results="/tmp/mhc_large_files_$$"
+    local tmp_sorted="/tmp/mhc_large_sorted_$$"
+    local tmp_display="/tmp/mhc_large_display_$$"
+
+    trap 'rm -f "$tmp_results" "$tmp_sorted" "$tmp_display"' RETURN
+
+    print_info "Scanning $HOME for files larger than 100 MB..."
+    print_info "This may take a moment depending on how many files you have."
+    echo ""
+
+    find "$HOME" \
+        \( \
+            -path "$HOME/Library" -o \
+            -path "$HOME/.Trash" -o \
+            -path "$HOME/.*cache*" -o \
+            -path "$HOME/.*Cache*" -o \
+            -path "/Volumes" \
+        \) -prune -o \
+        -type f -size +100M -print 2>/dev/null | \
+    while IFS= read -r filepath; do
+        local fsize
+        fsize=$(stat -f%z "$filepath" 2>/dev/null)
+        if [ -n "$fsize" ]; then
+            printf '%s|%s\n' "$fsize" "$filepath"
+        fi
+    done > "$tmp_results"
+
+    local file_count
+    file_count=$(wc -l < "$tmp_results" 2>/dev/null | tr -d ' ')
+
+    if [ "$file_count" -eq 0 ]; then
+        print_good "No files larger than 100 MB found outside excluded directories."
+        echo ""
+        return
+    fi
+
+    sort -t'|' -k1 -rn "$tmp_results" | head -20 > "$tmp_sorted"
+
+    local total_bytes=0
+    while IFS='|' read -r fsize fpath; do
+        total_bytes=$(( total_bytes + fsize ))
+    done < "$tmp_results"
+
+    local total_human
+    total_human=$(human_size "$total_bytes")
+
+    local display_count
+    display_count=$(wc -l < "$tmp_sorted" | tr -d ' ')
+
+    print_section "Found $file_count large file(s) — Total size: ${BOLD}${total_human}${NC}"
+    echo ""
+
+    rm -f "$tmp_display"
+
+    local idx=0
+    while IFS='|' read -r fsize fpath; do
+        idx=$(( idx + 1 ))
+        local fname
+        fname=$(basename "$fpath")
+        local fsize_human
+        fsize_human=$(human_size "$fsize")
+        local fdir
+        fdir=$(dirname "$fpath")
+        local fdir_display
+        fdir_display=$(printf '%s' "$fdir" | sed "s|^$HOME|~|")
+        local fmod
+        fmod=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$fpath" 2>/dev/null)
+        [ -z "$fmod" ] && fmod="unknown"
+
+        printf "  ${BOLD}%2d.${NC} ${CYAN}%-40s${NC} ${YELLOW}%8s${NC}  ${DIM}%s${NC}  ${DIM}Modified: %s${NC}\n" \
+            "$idx" "$fname" "$fsize_human" "$fdir_display" "$fmod"
+
+        printf '%d|%s\n' "$idx" "$fpath" >> "$tmp_display"
+    done < "$tmp_sorted"
+
+    if [ "$file_count" -gt 20 ]; then
+        echo ""
+        print_info "Showing top 20 of $file_count large files found."
+    fi
+
+    echo ""
+
+    local gb5=$(( 5 * 1024 * 1024 * 1024 ))
+    if [ "$total_bytes" -gt "$gb5" ]; then
+        TOTAL_WARNINGS=$(( TOTAL_WARNINGS + 1 ))
+        ALL_RECOMMENDATIONS+=("Large files consuming ${total_human} found in home directory — review and remove unneeded files.")
+        print_warning "Total large-file usage exceeds 5 GB (${total_human}). Consider cleaning up."
+    else
+        print_good "Total large-file usage: ${total_human}"
+    fi
+
+    echo ""
+
+    printf "${BOLD}Enter a number to reveal in Finder, or 'skip': ${NC}"
+    local user_choice
+    read -r user_choice 2>/dev/null
+
+    case "$user_choice" in
+        skip|s|"")
+            print_info "Skipping Finder reveal."
+            ;;
+        *)
+            if printf '%s' "$user_choice" | grep -qE '^[0-9]+$'; then
+                local chosen_path
+                chosen_path=$(grep "^${user_choice}|" "$tmp_display" 2>/dev/null | cut -d'|' -f2-)
+                if [ -n "$chosen_path" ]; then
+                    print_info "Revealing in Finder: $chosen_path"
+                    open -R "$chosen_path" 2>/dev/null
+                else
+                    print_warning "No entry found for number $user_choice."
+                fi
+            else
+                print_warning "Invalid input '$user_choice' — skipping Finder reveal."
+            fi
+            ;;
+    esac
+
+    echo ""
+}
+
+# ============================================================================
+# 15. DUPLICATE FILE FINDER
+# ============================================================================
+
+find_duplicates() {
+    print_header "DUPLICATE FILE FINDER"
+
+    local scan_dirs="$HOME/Downloads $HOME/Documents $HOME/Desktop"
+
+    local tmp_candidates="/tmp/mhc_dup_candidates_$$"
+    local tmp_sized="/tmp/mhc_dup_sized_$$"
+    local tmp_md5="/tmp/mhc_dup_md5_$$"
+    local tmp_groups="/tmp/mhc_dup_groups_$$"
+    local tmp_group_paths="/tmp/mhc_dup_gpaths_$$"
+
+    trap 'rm -f "$tmp_candidates" "$tmp_sized" "$tmp_md5" "$tmp_groups" "$tmp_group_paths"' RETURN
+
+    rm -f "$tmp_candidates" "$tmp_sized" "$tmp_md5" "$tmp_groups" "$tmp_group_paths"
+
+    local mb1=$(( 1 * 1024 * 1024 ))
+
+    local dir
+    for dir in $scan_dirs; do
+        if [ ! -d "$dir" ]; then
+            print_info "Directory not found, skipping: $dir"
+            continue
+        fi
+
+        printf "  ${DIM}Scanning %s ...${NC}\n" "$dir"
+
+        find "$dir" \
+            -not -name '.*' \
+            -not -path '*/.*' \
+            -type f -size +1M -print 2>/dev/null >> "$tmp_candidates"
+    done
+
+    local total_files
+    total_files=$(wc -l < "$tmp_candidates" 2>/dev/null | tr -d ' ')
+
+    echo ""
+
+    if [ "$total_files" -eq 0 ]; then
+        print_good "No files >= 1 MB found in scanned directories."
+        echo ""
+        return
+    fi
+
+    if [ "$total_files" -gt 5000 ]; then
+        print_warning "Found $total_files files to check — this could take a while."
+        printf "${BOLD}Continue scanning? (yes/no): ${NC}"
+        local cont_choice
+        read -r cont_choice 2>/dev/null
+        case "$cont_choice" in
+            yes|y|Y|YES)
+                print_info "Continuing scan..."
+                ;;
+            *)
+                print_info "Duplicate scan cancelled."
+                echo ""
+                return
+                ;;
+        esac
+    else
+        print_info "Found $total_files file(s) to check for duplicates."
+    fi
+
+    echo ""
+
+    print_info "Gathering file sizes..."
+
+    while IFS= read -r filepath; do
+        local fsize
+        fsize=$(stat -f%z "$filepath" 2>/dev/null)
+        if [ -n "$fsize" ] && [ "$fsize" -ge "$mb1" ]; then
+            printf '%s|%s\n' "$fsize" "$filepath"
+        fi
+    done < "$tmp_candidates" > "$tmp_sized"
+
+    sort -t'|' -k1 -n "$tmp_sized" > "${tmp_sized}.sorted"
+    mv "${tmp_sized}.sorted" "$tmp_sized"
+
+    local tmp_dup_sizes="/tmp/mhc_dupsizes_$$"
+    cut -d'|' -f1 "$tmp_sized" | sort | uniq -d > "$tmp_dup_sizes"
+
+    local dup_size_count
+    dup_size_count=$(wc -l < "$tmp_dup_sizes" | tr -d ' ')
+
+    if [ "$dup_size_count" -eq 0 ]; then
+        print_good "No files with matching sizes found — no duplicates detected."
+        rm -f "$tmp_dup_sizes"
+        echo ""
+        return
+    fi
+
+    print_info "Found $dup_size_count size group(s) to verify with MD5 checksums..."
+    echo ""
+
+    local checked=0
+    while IFS= read -r dup_size; do
+        grep "^${dup_size}|" "$tmp_sized" | while IFS='|' read -r fsize fpath; do
+            local fmd5
+            fmd5=$(md5 -q "$fpath" 2>/dev/null)
+            if [ -n "$fmd5" ]; then
+                printf '%s|%s|%s\n' "$fsize" "$fmd5" "$fpath"
+            fi
+        done
+        checked=$(( checked + 1 ))
+        printf "\r  ${DIM}Checksumming group %d of %d ...${NC}" "$checked" "$dup_size_count"
+    done < "$tmp_dup_sizes" >> "$tmp_md5"
+
+    rm -f "$tmp_dup_sizes"
+    echo ""
+    echo ""
+
+    if [ ! -s "$tmp_md5" ]; then
+        print_good "No duplicates found after checksum verification."
+        echo ""
+        return
+    fi
+
+    sort -t'|' -k1,2 "$tmp_md5" > "${tmp_md5}.sorted"
+    mv "${tmp_md5}.sorted" "$tmp_md5"
+
+    local prev_key=""
+    local group_lines=""
+    local group_num=0
+    local total_wasted=0
+
+    while IFS='|' read -r fsize fmd5 fpath; do
+        local cur_key="${fsize}|${fmd5}"
+        if [ "$cur_key" = "$prev_key" ]; then
+            group_lines="${group_lines}::${fpath}"
+        else
+            if [ -n "$prev_key" ]; then
+                local path_count
+                path_count=$(printf '%s' "$group_lines" | tr ':' '\n' | grep -c '/' 2>/dev/null)
+                if [ "$path_count" -ge 2 ]; then
+                    group_num=$(( group_num + 1 ))
+                    local g_size g_md5
+                    g_size=$(printf '%s' "$prev_key" | cut -d'|' -f1)
+                    g_md5=$(printf '%s' "$prev_key" | cut -d'|' -f2)
+                    printf 'GROUP|%d|%s|%s|%s\n' "$group_num" "$g_size" "$g_md5" "$group_lines" >> "$tmp_groups"
+                    local wasted=$(( g_size * (path_count - 1) ))
+                    total_wasted=$(( total_wasted + wasted ))
+                fi
+            fi
+            prev_key="$cur_key"
+            group_lines="$fpath"
+        fi
+    done < "$tmp_md5"
+
+    if [ -n "$prev_key" ]; then
+        local path_count
+        path_count=$(printf '%s' "$group_lines" | tr ':' '\n' | grep -c '/' 2>/dev/null)
+        if [ "$path_count" -ge 2 ]; then
+            group_num=$(( group_num + 1 ))
+            local g_size g_md5
+            g_size=$(printf '%s' "$prev_key" | cut -d'|' -f1)
+            g_md5=$(printf '%s' "$prev_key" | cut -d'|' -f2)
+            printf 'GROUP|%d|%s|%s|%s\n' "$group_num" "$g_size" "$g_md5" "$group_lines" >> "$tmp_groups"
+            local wasted=$(( g_size * (path_count - 1) ))
+            total_wasted=$(( total_wasted + wasted ))
+        fi
+    fi
+
+    if [ "$group_num" -eq 0 ]; then
+        print_good "No duplicate files found after checksum verification."
+        echo ""
+        return
+    fi
+
+    local total_wasted_human
+    total_wasted_human=$(human_size "$total_wasted")
+
+    print_section "Found ${BOLD}$group_num${NC} duplicate group(s) — Wasted space: ${BOLD}${YELLOW}${total_wasted_human}${NC}"
+    echo ""
+
+    while IFS='|' read -r tag gidx gsize gmd5 gpaths; do
+        local gsize_human
+        gsize_human=$(human_size "$gsize")
+
+        printf "  ${BOLD}${BLUE}Group %d${NC}  ${DIM}(size: %s, md5: %.8s...)${NC}\n" \
+            "$gidx" "$gsize_human" "$gmd5"
+
+        local path_idx=0
+        local IFS_SAVE="$IFS"
+        IFS=':'
+        for segment in $gpaths; do
+            if [ -n "$segment" ] && [ "$segment" != ":" ]; then
+                path_idx=$(( path_idx + 1 ))
+                local display_path
+                display_path=$(printf '%s' "$segment" | sed "s|^$HOME|~|")
+                if [ "$path_idx" -eq 1 ]; then
+                    printf "    ${GREEN}[keep]${NC} %s\n" "$display_path"
+                else
+                    printf "    ${RED}[dupe]${NC} %s\n" "$display_path"
+                fi
+            fi
+        done
+        IFS="$IFS_SAVE"
+
+        echo ""
+    done < "$tmp_groups"
+
+    local gb1=$(( 1 * 1024 * 1024 * 1024 ))
+    if [ "$total_wasted" -gt "$gb1" ]; then
+        TOTAL_WARNINGS=$(( TOTAL_WARNINGS + 1 ))
+        ALL_RECOMMENDATIONS+=("Duplicate files wasting ${total_wasted_human} found — clean up duplicates in Downloads, Documents, Desktop.")
+    fi
+
+    printf "${BOLD}Enter groups to clean (e.g. 1,3,5), 'all', or 'skip': ${NC}"
+    local del_choice
+    read -r del_choice 2>/dev/null
+
+    case "$del_choice" in
+        skip|s|"")
+            print_info "Skipping duplicate cleanup."
+            echo ""
+            return
+            ;;
+    esac
+
+    local groups_to_clean=""
+    if [ "$del_choice" = "all" ]; then
+        local n=1
+        while [ "$n" -le "$group_num" ]; do
+            groups_to_clean="${groups_to_clean} $n"
+            n=$(( n + 1 ))
+        done
+    else
+        local IFS_SAVE="$IFS"
+        IFS=','
+        for token in $del_choice; do
+            IFS="$IFS_SAVE"
+            token=$(printf '%s' "$token" | tr -d ' ')
+            if printf '%s' "$token" | grep -qE '^[0-9]+$'; then
+                if [ "$token" -ge 1 ] && [ "$token" -le "$group_num" ]; then
+                    groups_to_clean="${groups_to_clean} $token"
+                else
+                    print_warning "Group $token out of range, skipping."
+                fi
+            fi
+            IFS=','
+        done
+        IFS="$IFS_SAVE"
+    fi
+
+    if [ -z "$groups_to_clean" ]; then
+        print_warning "No valid groups selected."
+        echo ""
+        return
+    fi
+
+    local trash_dir="$HOME/.Trash"
+    local deleted_count=0
+    local deleted_bytes=0
+
+    echo ""
+    print_info "Moving duplicates to Trash (keeping first copy in each group)..."
+    echo ""
+
+    for gidx in $groups_to_clean; do
+        local group_line
+        group_line=$(grep "^GROUP|${gidx}|" "$tmp_groups" 2>/dev/null)
+        if [ -z "$group_line" ]; then
+            print_warning "Could not find group $gidx data, skipping."
+            continue
+        fi
+
+        local gsize gpaths gmd5
+        gsize=$(printf '%s' "$group_line" | cut -d'|' -f3)
+        gmd5=$(printf '%s' "$group_line" | cut -d'|' -f4)
+        gpaths=$(printf '%s' "$group_line" | cut -d'|' -f5-)
+
+        printf "  ${BOLD}Group %d:${NC}\n" "$gidx"
+
+        local path_idx=0
+        local IFS_SAVE="$IFS"
+        IFS=':'
+        for segment in $gpaths; do
+            IFS="$IFS_SAVE"
+            if [ -n "$segment" ] && [ "$segment" != ":" ]; then
+                path_idx=$(( path_idx + 1 ))
+                if [ "$path_idx" -eq 1 ]; then
+                    local keep_display
+                    keep_display=$(printf '%s' "$segment" | sed "s|^$HOME|~|")
+                    printf "    ${GREEN}Keeping:${NC}  %s\n" "$keep_display"
+                else
+                    if [ -f "$segment" ]; then
+                        local fname
+                        fname=$(basename "$segment")
+                        local dest_path="$trash_dir/$fname"
+                        if [ -e "$dest_path" ]; then
+                            dest_path="${trash_dir}/${fname}_dup_$$_${path_idx}"
+                        fi
+                        mv "$segment" "$dest_path" 2>/dev/null
+                        if [ $? -eq 0 ]; then
+                            local del_display
+                            del_display=$(printf '%s' "$segment" | sed "s|^$HOME|~|")
+                            printf "    ${RED}Trashed:${NC}  %s\n" "$del_display"
+                            deleted_count=$(( deleted_count + 1 ))
+                            deleted_bytes=$(( deleted_bytes + gsize ))
+                        else
+                            print_warning "Failed to trash: $segment"
+                        fi
+                    else
+                        print_warning "File no longer exists: $segment"
+                    fi
+                fi
+            fi
+            IFS=':'
+        done
+        IFS="$IFS_SAVE"
+
+        echo ""
+    done
+
+    local deleted_human
+    deleted_human=$(human_size "$deleted_bytes")
+
+    if [ "$deleted_count" -gt 0 ]; then
+        print_good "Moved $deleted_count duplicate file(s) to Trash — freed ${deleted_human}."
+    else
+        print_info "No files were moved."
+    fi
+
+    echo ""
+}
+
+# ============================================================================
+# 16. APP UNINSTALLER (with leftover detection)
+# ============================================================================
+
+uninstall_apps() {
+    print_header "APP UNINSTALLER"
+
+    local SYSTEM_APPS="Safari|Mail|Messages|FaceTime|Maps|Photos|Music|Podcasts|TV|News|Stocks|Weather|Clock|Reminders|Notes|Calendar|Contacts|Preview|TextEdit|Chess|Stickies|Calculator|Dictionary|QuickTime Player|Font Book|Image Capture|Screenshot|Automator|Script Editor|Terminal|Activity Monitor|Console|Disk Utility|Migration Assistant|Boot Camp Assistant|Bluetooth File Exchange|AirPort Utility|ColorSync Utility|Directory Utility|System Information|Keychain Access|VoiceOver Utility|Audio MIDI Setup|Digital Color Meter|Grapher|System Preferences|System Settings|Finder|Launchpad|Mission Control|App Store|iBooks|Books|Home|Shortcuts|Freeform"
+
+    echo ""
+    print_info "Scanning /Applications for third-party apps..."
+    echo ""
+
+    local APP_NAMES=()
+    local APP_PATHS=()
+    local APP_SIZES=()
+
+    local raw_list
+    raw_list=$(find /Applications -maxdepth 1 -name "*.app" -type d 2>/dev/null | sort)
+
+    local app
+    while IFS= read -r app; do
+        [ -z "$app" ] && continue
+
+        local name
+        name=$(basename "$app" .app)
+
+        if echo "$name" | grep -qE "^(${SYSTEM_APPS})$" 2>/dev/null; then
+            continue
+        fi
+
+        local size_bytes
+        size_bytes=$(du -sk "$app" 2>/dev/null | awk '{print $1 * 1024}')
+        [ -z "$size_bytes" ] && size_bytes=0
+
+        APP_NAMES+=("$name")
+        APP_PATHS+=("$app")
+        APP_SIZES+=("$size_bytes")
+    done <<EOF
+$raw_list
+EOF
+
+    local total_apps=${#APP_NAMES[@]}
+
+    if [ "$total_apps" -eq 0 ]; then
+        print_info "No third-party apps found in /Applications."
+        return
+    fi
+
+    echo -e "  ${BOLD}Third-party apps in /Applications:${NC}"
+    echo ""
+
+    local i=0
+    while [ "$i" -lt "$total_apps" ]; do
+        local human
+        human=$(human_size "${APP_SIZES[$i]}")
+        printf "  ${CYAN}%3d)${NC}  %-45s  ${DIM}%s${NC}\n" \
+            "$((i + 1))" "${APP_NAMES[$i]}" "$human"
+        i=$((i + 1))
+    done
+
+    echo ""
+    echo -e "  ${DIM}Enter numbers separated by commas to uninstall (e.g. 1,3,5), or 'skip':${NC}"
+    printf "  > "
+    local selection
+    read -r selection
+
+    if [ -z "$selection" ] || [ "$selection" = "skip" ]; then
+        print_info "Skipping app uninstaller."
+        return
+    fi
+
+    local SELECTED_INDICES=()
+    local token
+    local selection_spaced
+    selection_spaced=$(echo "$selection" | tr ',' ' ')
+    for token in $selection_spaced; do
+        if echo "$token" | grep -qE '^[0-9]+$'; then
+            local idx=$((token - 1))
+            if [ "$idx" -ge 0 ] && [ "$idx" -lt "$total_apps" ]; then
+                SELECTED_INDICES+=("$idx")
+            else
+                print_warning "Number $token is out of range — skipping."
+            fi
+        else
+            print_warning "'$token' is not a valid number — skipping."
+        fi
+    done
+
+    if [ "${#SELECTED_INDICES[@]}" -eq 0 ]; then
+        print_info "No valid selections. Skipping."
+        return
+    fi
+
+    local sel_idx
+    for sel_idx in "${SELECTED_INDICES[@]}"; do
+        local app_name="${APP_NAMES[$sel_idx]}"
+        local app_path="${APP_PATHS[$sel_idx]}"
+
+        echo ""
+        echo -e "  ${BOLD}${MAGENTA}── Uninstalling: ${app_name} ──${NC}"
+
+        local bundle_id
+        bundle_id=$(defaults read "$app_path/Contents/Info.plist" CFBundleIdentifier 2>/dev/null)
+
+        if [ -z "$bundle_id" ]; then
+            print_warning "Could not read bundle ID for $app_name. Will search by app name only."
+        else
+            print_info "Bundle ID: ${bundle_id}"
+        fi
+
+        local LEFTOVER_CANDIDATES=()
+
+        if [ -n "$bundle_id" ]; then
+            LEFTOVER_CANDIDATES+=(
+                "$HOME/Library/Application Support/$bundle_id"
+                "$HOME/Library/Preferences/${bundle_id}.plist"
+                "$HOME/Library/Caches/$bundle_id"
+                "$HOME/Library/Saved Application State/${bundle_id}.savedState"
+                "$HOME/Library/Containers/$bundle_id"
+                "$HOME/Library/WebKit/$bundle_id"
+                "$HOME/Library/HTTPStorages/$bundle_id"
+                "$HOME/Library/Cookies/${bundle_id}.binarycookies"
+                "$HOME/Library/Logs/$bundle_id"
+            )
+        fi
+
+        LEFTOVER_CANDIDATES+=(
+            "$HOME/Library/Application Support/$app_name"
+            "$HOME/Library/Caches/$app_name"
+            "$HOME/Library/Logs/$app_name"
+        )
+
+        local GLOB_FOUND=()
+
+        if [ -n "$bundle_id" ]; then
+            local pref_glob
+            for pref_glob in "$HOME/Library/Preferences/${bundle_id}".*.plist; do
+                [ -e "$pref_glob" ] && GLOB_FOUND+=("$pref_glob")
+            done
+
+            local gc
+            for gc in "$HOME/Library/Group Containers/"*"${bundle_id}"*; do
+                [ -e "$gc" ] && GLOB_FOUND+=("$gc")
+            done
+
+            local la
+            for la in "$HOME/Library/LaunchAgents/"*"${bundle_id}"*.plist; do
+                [ -e "$la" ] && GLOB_FOUND+=("$la")
+            done
+        fi
+
+        local FOUND_LEFTOVERS=()
+        local total_leftover_bytes=0
+
+        local candidate
+        for candidate in "${LEFTOVER_CANDIDATES[@]}"; do
+            if [ -e "$candidate" ]; then
+                FOUND_LEFTOVERS+=("$candidate")
+                if [ -d "$candidate" ]; then
+                    local sz
+                    sz=$(du -sk "$candidate" 2>/dev/null | awk '{print $1 * 1024}')
+                    total_leftover_bytes=$((total_leftover_bytes + sz))
+                elif [ -f "$candidate" ]; then
+                    local fsz
+                    fsz=$(stat -f%z "$candidate" 2>/dev/null)
+                    [ -n "$fsz" ] && total_leftover_bytes=$((total_leftover_bytes + fsz))
+                fi
+            fi
+        done
+
+        local gf
+        for gf in "${GLOB_FOUND[@]}"; do
+            FOUND_LEFTOVERS+=("$gf")
+            if [ -d "$gf" ]; then
+                local gsz
+                gsz=$(du -sk "$gf" 2>/dev/null | awk '{print $1 * 1024}')
+                total_leftover_bytes=$((total_leftover_bytes + gsz))
+            elif [ -f "$gf" ]; then
+                local gfsz
+                gfsz=$(stat -f%z "$gf" 2>/dev/null)
+                [ -n "$gfsz" ] && total_leftover_bytes=$((total_leftover_bytes + gfsz))
+            fi
+        done
+
+        local leftover_count=${#FOUND_LEFTOVERS[@]}
+        local leftover_human
+        leftover_human=$(human_size "$total_leftover_bytes")
+
+        if [ "$leftover_count" -gt 0 ]; then
+            echo ""
+            print_info "Found ${leftover_count} leftover item(s) (${leftover_human}):"
+            local lf
+            for lf in "${FOUND_LEFTOVERS[@]}"; do
+                echo -e "    ${DIM}${lf}${NC}"
+            done
+        else
+            print_info "No leftover files found in standard locations."
+        fi
+
+        echo ""
+        local app_size_human
+        app_size_human=$(human_size "${APP_SIZES[$sel_idx]}")
+        echo -e "  ${YELLOW}Will move to Trash:${NC}"
+        echo -e "    ${DIM}${app_path}${NC}  (${app_size_human})"
+        if [ "$leftover_count" -gt 0 ]; then
+            local lf2
+            for lf2 in "${FOUND_LEFTOVERS[@]}"; do
+                echo -e "    ${DIM}${lf2}${NC}"
+            done
+        fi
+        echo ""
+        printf "  Proceed? (y/n): "
+        local confirm
+        read -r confirm
+
+        if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+            print_info "Skipped $app_name."
+            continue
+        fi
+
+        local removed_count=0
+        local removed_bytes=0
+
+        if mv "$app_path" "$HOME/.Trash/" 2>/dev/null; then
+            removed_bytes=$((removed_bytes + APP_SIZES[$sel_idx]))
+            removed_count=$((removed_count + 1))
+        else
+            print_warning "Could not move $app_path to Trash (may need sudo or app is running)."
+        fi
+
+        local lf3
+        for lf3 in "${FOUND_LEFTOVERS[@]}"; do
+            if [ -e "$lf3" ]; then
+                mv "$lf3" "$HOME/.Trash/" 2>/dev/null && removed_count=$((removed_count + 1))
+            fi
+        done
+
+        local removed_human
+        removed_human=$(human_size "$removed_bytes")
+        print_good "Removed ${app_name}: ${removed_count} item(s) moved to Trash (~${removed_human} freed)"
+        TOTAL_RECLAIMABLE_BYTES=$((TOTAL_RECLAIMABLE_BYTES + removed_bytes))
+        ALL_RECOMMENDATIONS+=("Empty the Trash to permanently free space reclaimed from ${app_name}.")
+    done
+
+    echo ""
+    print_info "Done. Remember to empty the Trash to permanently free disk space."
+}
+
+# ============================================================================
+# 17. PRIVACY CLEANUP
+# ============================================================================
+
+cleanup_privacy() {
+    print_header "PRIVACY CLEANUP"
+
+    echo ""
+    print_info "Scanning for privacy-sensitive data..."
+    echo ""
+
+    _sum_path_sizes() {
+        local total=0
+        local p
+        for p in "$@"; do
+            if [ -d "$p" ]; then
+                local s
+                s=$(du -sk "$p" 2>/dev/null | awk '{print $1 * 1024}')
+                [ -n "$s" ] && total=$((total + s))
+            elif [ -f "$p" ]; then
+                local s
+                s=$(stat -f%z "$p" 2>/dev/null)
+                [ -n "$s" ] && total=$((total + s))
+            fi
+        done
+        echo "$total"
+    }
+
+    local BROWSER_LABELS=()
+    local BROWSER_PATHS=()
+    local BROWSER_SIZES=()
+
+    # Safari
+    local safari_paths=()
+    [ -f "$HOME/Library/Safari/History.db" ] && safari_paths+=("$HOME/Library/Safari/History.db")
+    [ -f "$HOME/Library/Safari/History.db-wal" ] && safari_paths+=("$HOME/Library/Safari/History.db-wal")
+    [ -f "$HOME/Library/Safari/History.db-shm" ] && safari_paths+=("$HOME/Library/Safari/History.db-shm")
+    [ -f "$HOME/Library/Cookies/Cookies.binarycookies" ] && safari_paths+=("$HOME/Library/Cookies/Cookies.binarycookies")
+    [ -d "$HOME/Library/Safari/LocalStorage" ] && safari_paths+=("$HOME/Library/Safari/LocalStorage")
+    if [ "${#safari_paths[@]}" -gt 0 ]; then
+        local safari_size
+        safari_size=$(_sum_path_sizes "${safari_paths[@]}")
+        BROWSER_LABELS+=("Safari (history + cookies)")
+        local joined_safari
+        joined_safari=$(printf '%s|' "${safari_paths[@]}")
+        BROWSER_PATHS+=("$joined_safari")
+        BROWSER_SIZES+=("$safari_size")
+    fi
+
+    # Chrome
+    local chrome_base="$HOME/Library/Application Support/Google/Chrome/Default"
+    local chrome_paths=()
+    [ -f "$chrome_base/History" ] && chrome_paths+=("$chrome_base/History")
+    [ -f "$chrome_base/Cookies" ] && chrome_paths+=("$chrome_base/Cookies")
+    [ -d "$chrome_base/Local Storage" ] && chrome_paths+=("$chrome_base/Local Storage")
+    [ -d "$chrome_base/Session Storage" ] && chrome_paths+=("$chrome_base/Session Storage")
+    if [ "${#chrome_paths[@]}" -gt 0 ]; then
+        local chrome_size
+        chrome_size=$(_sum_path_sizes "${chrome_paths[@]}")
+        BROWSER_LABELS+=("Google Chrome (history + cookies)")
+        local joined_chrome
+        joined_chrome=$(printf '%s|' "${chrome_paths[@]}")
+        BROWSER_PATHS+=("$joined_chrome")
+        BROWSER_SIZES+=("$chrome_size")
+    fi
+
+    # Firefox
+    local ff_base="$HOME/Library/Application Support/Firefox/Profiles"
+    local firefox_paths=()
+    if [ -d "$ff_base" ]; then
+        local ff_profile
+        for ff_profile in "$ff_base"/*/; do
+            [ -f "${ff_profile}places.sqlite" ] && firefox_paths+=("${ff_profile}places.sqlite")
+            [ -f "${ff_profile}cookies.sqlite" ] && firefox_paths+=("${ff_profile}cookies.sqlite")
+        done
+    fi
+    if [ "${#firefox_paths[@]}" -gt 0 ]; then
+        local ff_size
+        ff_size=$(_sum_path_sizes "${firefox_paths[@]}")
+        BROWSER_LABELS+=("Firefox (history + cookies)")
+        local joined_ff
+        joined_ff=$(printf '%s|' "${firefox_paths[@]}")
+        BROWSER_PATHS+=("$joined_ff")
+        BROWSER_SIZES+=("$ff_size")
+    fi
+
+    # Edge
+    local edge_base="$HOME/Library/Application Support/Microsoft Edge/Default"
+    local edge_paths=()
+    [ -f "$edge_base/History" ] && edge_paths+=("$edge_base/History")
+    [ -f "$edge_base/Cookies" ] && edge_paths+=("$edge_base/Cookies")
+    [ -d "$edge_base/Local Storage" ] && edge_paths+=("$edge_base/Local Storage")
+    if [ "${#edge_paths[@]}" -gt 0 ]; then
+        local edge_size
+        edge_size=$(_sum_path_sizes "${edge_paths[@]}")
+        BROWSER_LABELS+=("Microsoft Edge (history + cookies)")
+        local joined_edge
+        joined_edge=$(printf '%s|' "${edge_paths[@]}")
+        BROWSER_PATHS+=("$joined_edge")
+        BROWSER_SIZES+=("$edge_size")
+    fi
+
+    # Arc
+    local arc_base="$HOME/Library/Application Support/Arc/User Data/Default"
+    local arc_paths=()
+    [ -f "$arc_base/History" ] && arc_paths+=("$arc_base/History")
+    [ -f "$arc_base/Cookies" ] && arc_paths+=("$arc_base/Cookies")
+    [ -d "$arc_base/Local Storage" ] && arc_paths+=("$arc_base/Local Storage")
+    if [ "${#arc_paths[@]}" -gt 0 ]; then
+        local arc_size
+        arc_size=$(_sum_path_sizes "${arc_paths[@]}")
+        BROWSER_LABELS+=("Arc (history + cookies)")
+        local joined_arc
+        joined_arc=$(printf '%s|' "${arc_paths[@]}")
+        BROWSER_PATHS+=("$joined_arc")
+        BROWSER_SIZES+=("$arc_size")
+    fi
+
+    # Brave
+    local brave_base="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Default"
+    local brave_paths=()
+    [ -f "$brave_base/History" ] && brave_paths+=("$brave_base/History")
+    [ -f "$brave_base/Cookies" ] && brave_paths+=("$brave_base/Cookies")
+    [ -d "$brave_base/Local Storage" ] && brave_paths+=("$brave_base/Local Storage")
+    if [ "${#brave_paths[@]}" -gt 0 ]; then
+        local brave_size
+        brave_size=$(_sum_path_sizes "${brave_paths[@]}")
+        BROWSER_LABELS+=("Brave (history + cookies)")
+        local joined_brave
+        joined_brave=$(printf '%s|' "${brave_paths[@]}")
+        BROWSER_PATHS+=("$joined_brave")
+        BROWSER_SIZES+=("$brave_size")
+    fi
+
+    local browser_count=${#BROWSER_LABELS[@]}
+
+    # Recent Items
+    local recent_items_dir="$HOME/Library/Application Support/com.apple.sharedfilelist"
+    local recent_size=0
+    local recent_available=0
+    if [ -d "$recent_items_dir" ]; then
+        recent_size=$(_sum_path_sizes "$recent_items_dir")
+        recent_available=1
+    fi
+
+    # Siri Suggestions
+    local siri_dir="$HOME/Library/Suggestions"
+    local siri_size=0
+    local siri_available=0
+    if [ -d "$siri_dir" ]; then
+        siri_size=$(_sum_path_sizes "$siri_dir")
+        siri_available=1
+    fi
+
+    # Quick Look Cache
+    local ql_dir="$HOME/Library/Caches/com.apple.QuickLookDaemon"
+    local ql_size=0
+    local ql_available=0
+    if [ -d "$ql_dir" ]; then
+        ql_size=$(_sum_path_sizes "$ql_dir")
+        ql_available=1
+    fi
+    ql_available=1
+
+    # Wi-Fi count (info only)
+    local wifi_count=0
+    local wifi_list
+    wifi_list=$(networksetup -listpreferredwirelessnetworks en0 2>/dev/null | tail -n +2 | grep -v "^$")
+    wifi_count=$(echo "$wifi_list" | grep -c . 2>/dev/null)
+    [ -z "$wifi_count" ] && wifi_count=0
+
+    # Display menu
+    print_section "What can be cleaned:"
+    echo ""
+
+    local MENU_LABELS=()
+    local MENU_TYPES=()
+    local MENU_SIZES=()
+    local menu_num=1
+
+    local bi=0
+    while [ "$bi" -lt "$browser_count" ]; do
+        local bh
+        bh=$(human_size "${BROWSER_SIZES[$bi]}")
+        printf "  ${CYAN}%3d)${NC}  %-50s  ${YELLOW}%s${NC}\n" \
+            "$menu_num" "${BROWSER_LABELS[$bi]}" "$bh"
+        MENU_LABELS+=("${BROWSER_LABELS[$bi]}")
+        MENU_TYPES+=("browser_${bi}")
+        MENU_SIZES+=("${BROWSER_SIZES[$bi]}")
+        menu_num=$((menu_num + 1))
+        bi=$((bi + 1))
+    done
+
+    if [ "$recent_available" -eq 1 ]; then
+        local rh
+        rh=$(human_size "$recent_size")
+        printf "  ${CYAN}%3d)${NC}  %-50s  ${YELLOW}%s${NC}\n" \
+            "$menu_num" "Recent Items (open recent menus)" "$rh"
+        MENU_LABELS+=("Recent Items")
+        MENU_TYPES+=("recent")
+        MENU_SIZES+=("$recent_size")
+        menu_num=$((menu_num + 1))
+    fi
+
+    if [ "$siri_available" -eq 1 ]; then
+        local sh
+        sh=$(human_size "$siri_size")
+        printf "  ${CYAN}%3d)${NC}  %-50s  ${YELLOW}%s${NC}\n" \
+            "$menu_num" "Siri Suggestions Data" "$sh"
+        MENU_LABELS+=("Siri Suggestions")
+        MENU_TYPES+=("siri")
+        MENU_SIZES+=("$siri_size")
+        menu_num=$((menu_num + 1))
+    fi
+
+    if [ "$ql_available" -eq 1 ]; then
+        local qlh
+        qlh=$(human_size "$ql_size")
+        printf "  ${CYAN}%3d)${NC}  %-50s  ${YELLOW}%s${NC}\n" \
+            "$menu_num" "Quick Look Cache" "$qlh"
+        MENU_LABELS+=("Quick Look Cache")
+        MENU_TYPES+=("ql")
+        MENU_SIZES+=("$ql_size")
+        menu_num=$((menu_num + 1))
+    fi
+
+    echo ""
+    echo -e "  ${DIM}  (info)${NC}  Saved Wi-Fi networks: ${BOLD}${wifi_count}${NC} network(s) stored"
+    echo -e "  ${DIM}          Managed via System Settings > Wi-Fi > Known Networks.${NC}"
+
+    local total_menu_items=${#MENU_LABELS[@]}
+
+    if [ "$total_menu_items" -eq 0 ]; then
+        echo ""
+        print_good "Nothing to clean — no privacy data found."
+        return
+    fi
+
+    echo ""
+    echo -e "  ${DIM}Enter numbers (e.g. 1,3), 'all' to clean everything, or 'skip':${NC}"
+    printf "  > "
+    local selection
+    read -r selection
+
+    if [ -z "$selection" ] || [ "$selection" = "skip" ]; then
+        print_info "Skipping privacy cleanup."
+        return
+    fi
+
+    local SELECTED=()
+    if [ "$selection" = "all" ]; then
+        local k=0
+        while [ "$k" -lt "$total_menu_items" ]; do
+            SELECTED+=("$k")
+            k=$((k + 1))
+        done
+    else
+        local token
+        local sel_spaced
+        sel_spaced=$(echo "$selection" | tr ',' ' ')
+        for token in $sel_spaced; do
+            if echo "$token" | grep -qE '^[0-9]+$'; then
+                local idx=$((token - 1))
+                if [ "$idx" -ge 0 ] && [ "$idx" -lt "$total_menu_items" ]; then
+                    SELECTED+=("$idx")
+                else
+                    print_warning "Number $token is out of range — skipping."
+                fi
+            else
+                print_warning "'$token' is not a valid number — skipping."
+            fi
+        done
+    fi
+
+    if [ "${#SELECTED[@]}" -eq 0 ]; then
+        print_info "No valid selections. Skipping."
+        return
+    fi
+
+    # Browser warning gate
+    local browser_selected=0
+    local sidx
+    for sidx in "${SELECTED[@]}"; do
+        local mtype="${MENU_TYPES[$sidx]}"
+        if echo "$mtype" | grep -q "^browser_"; then
+            browser_selected=1
+            break
+        fi
+    done
+
+    if [ "$browser_selected" -eq 1 ]; then
+        echo ""
+        echo -e "  ${RED}${BOLD}WARNING:${NC} ${YELLOW}Clearing browser history and cookies will log you out of all websites.${NC}"
+        echo -e "  ${YELLOW}You will need to re-enter passwords for every site.${NC}"
+        echo ""
+        printf "  Are you sure you want to continue? (yes/no): "
+        local bconfirm
+        read -r bconfirm
+        if [ "$bconfirm" != "yes" ] && [ "$bconfirm" != "y" ]; then
+            local NEW_SELECTED=()
+            for sidx in "${SELECTED[@]}"; do
+                if ! echo "${MENU_TYPES[$sidx]}" | grep -q "^browser_"; then
+                    NEW_SELECTED+=("$sidx")
+                fi
+            done
+            SELECTED=("${NEW_SELECTED[@]}")
+            print_info "Browser cleanup cancelled. Continuing with other selections."
+        fi
+    fi
+
+    echo ""
+    local total_freed=0
+
+    for sidx in "${SELECTED[@]}"; do
+        local label="${MENU_LABELS[$sidx]}"
+        local mtype="${MENU_TYPES[$sidx]}"
+
+        echo -e "  ${BOLD}Cleaning: ${label}${NC}"
+
+        case "$mtype" in
+            browser_*)
+                local bidx
+                bidx=$(echo "$mtype" | sed 's/browser_//')
+                local raw_paths="${BROWSER_PATHS[$bidx]}"
+                local bpath
+                local freed_this=0
+                local old_IFS="$IFS"
+                IFS='|'
+                for bpath in $raw_paths; do
+                    IFS="$old_IFS"
+                    [ -z "$bpath" ] && continue
+                    if [ -e "$bpath" ]; then
+                        local psz=0
+                        if [ -d "$bpath" ]; then
+                            psz=$(du -sk "$bpath" 2>/dev/null | awk '{print $1 * 1024}')
+                        else
+                            psz=$(stat -f%z "$bpath" 2>/dev/null)
+                        fi
+                        [ -z "$psz" ] && psz=0
+                        mv "$bpath" "$HOME/.Trash/" 2>/dev/null && \
+                            freed_this=$((freed_this + psz))
+                    fi
+                done
+                IFS="$old_IFS"
+                total_freed=$((total_freed + freed_this))
+                print_good "Cleared ${label} (~$(human_size "$freed_this") moved to Trash)"
+                ;;
+            recent)
+                osascript -e 'tell application "System Events" to delete every recent item of every recent items folder' 2>/dev/null
+                local ritem
+                for ritem in "$recent_items_dir"/*.sfl2 "$recent_items_dir"/*.sfl; do
+                    [ -e "$ritem" ] && mv "$ritem" "$HOME/.Trash/" 2>/dev/null
+                done
+                total_freed=$((total_freed + recent_size))
+                print_good "Cleared Recent Items (~$(human_size "$recent_size") moved to Trash)"
+                ;;
+            siri)
+                if [ -d "$siri_dir" ]; then
+                    mv "$siri_dir" "$HOME/.Trash/" 2>/dev/null && \
+                        print_good "Cleared Siri Suggestions Data (~$(human_size "$siri_size") moved to Trash)" || \
+                        print_warning "Could not move Siri Suggestions to Trash."
+                    total_freed=$((total_freed + siri_size))
+                fi
+                ;;
+            ql)
+                if [ -d "$ql_dir" ]; then
+                    mv "$ql_dir" "$HOME/.Trash/" 2>/dev/null
+                    total_freed=$((total_freed + ql_size))
+                fi
+                qlmanage -r cache 2>/dev/null
+                print_good "Cleared Quick Look Cache (~$(human_size "$ql_size") moved to Trash, system cache reset)"
+                ;;
+            *)
+                print_warning "Unknown cleanup type: $mtype"
+                ;;
+        esac
+    done
+
+    echo ""
+    if [ "$total_freed" -gt 0 ]; then
+        print_good "Privacy cleanup complete. Total moved to Trash: $(human_size "$total_freed")"
+        TOTAL_RECLAIMABLE_BYTES=$((TOTAL_RECLAIMABLE_BYTES + total_freed))
+        ALL_RECOMMENDATIONS+=("Empty the Trash to permanently free space from privacy cleanup.")
+    else
+        print_info "Privacy cleanup complete. No data was removed."
+    fi
+    print_info "Remember to empty the Trash to permanently reclaim disk space."
+}
+
+# ============================================================================
+# 18. SYSTEM MAINTENANCE
+# ============================================================================
+
+run_maintenance() {
+    print_header "SYSTEM MAINTENANCE"
+
+    echo ""
+    echo -e "  ${DIM}These are built-in macOS maintenance tasks. No third-party tools needed.${NC}"
+    echo ""
+
+    local tm_snapshots=""
+    tm_snapshots=$(tmutil listlocalsnapshots / 2>/dev/null)
+    local has_tm_snapshots=0
+    [ -n "$tm_snapshots" ] && has_tm_snapshots=1
+
+    local mail_glob
+    mail_glob=$(ls -d ~/Library/Mail/V*/MailData/Envelope\ Index 2>/dev/null | head -1)
+    local has_mail=0
+    [ -n "$mail_glob" ] && has_mail=1
+
+    echo -e "  ${BOLD}Available maintenance tasks:${NC}"
+    echo ""
+    echo -e "  ${CYAN}1.${NC} ${BOLD}Run Periodic Scripts${NC} ${DIM}[requires admin]${NC}"
+    echo -e "     Rotates logs, rebuilds databases, cleans temp files"
+    echo ""
+    echo -e "  ${CYAN}2.${NC} ${BOLD}Rebuild Spotlight Index${NC} ${DIM}[requires admin]${NC}"
+    echo -e "     Fixes slow or broken Spotlight search"
+    echo ""
+    echo -e "  ${CYAN}3.${NC} ${BOLD}Rebuild Launch Services${NC}"
+    echo -e "     Fixes duplicate 'Open With' menu entries"
+    echo ""
+    echo -e "  ${CYAN}4.${NC} ${BOLD}Clear Font Cache${NC} ${DIM}[requires admin]${NC}"
+    echo -e "     Fixes font rendering glitches and corruption"
+    echo ""
+
+    if [ "$has_mail" -eq 1 ]; then
+        echo -e "  ${CYAN}5.${NC} ${BOLD}Speed Up Mail${NC}"
+        echo -e "     Reindexes Mail database for faster search"
+        echo ""
+    fi
+
+    echo -e "  ${CYAN}6.${NC} ${BOLD}Free Purgeable Space${NC}"
+    echo -e "     Triggers macOS to release purgeable disk space"
+    echo ""
+
+    if [ "$has_tm_snapshots" -eq 1 ]; then
+        echo -e "  ${CYAN}7.${NC} ${BOLD}Thin Time Machine Snapshots${NC}"
+        echo -e "     Frees space by trimming local Time Machine snapshots"
+        echo ""
+    fi
+
+    echo -e "  ${CYAN}8.${NC} ${BOLD}Flush DNS Cache${NC} ${DIM}[requires admin]${NC}"
+    echo -e "     Clears stale DNS entries; fixes site-not-found errors"
+    echo ""
+
+    echo -e "  ${DIM}Tasks marked [requires admin] will prompt for your password.${NC}"
+    echo ""
+    printf "  Enter numbers (e.g. 1,3,5), 'all', or 'skip': "
+    local selection
+    read -r selection
+
+    if [ -z "$selection" ] || [ "$selection" = "skip" ]; then
+        print_info "Skipping maintenance tasks."
+        return
+    fi
+
+    if [ "$selection" = "all" ]; then
+        selection="1,2,3,4,6,8"
+        [ "$has_mail" -eq 1 ] && selection="${selection},5"
+        [ "$has_tm_snapshots" -eq 1 ] && selection="${selection},7"
+    fi
+
+    local tasks
+    tasks=$(echo "$selection" | tr ' ' ',' | tr ',' '\n' | sort -un | tr '\n' ' ')
+
+    echo ""
+    print_section "RUNNING SELECTED TASKS"
+
+    _maint_run() {
+        local task="$1"
+        case "$task" in
+            1)
+                echo -e "\n  ${BOLD}[1/8] Running periodic maintenance scripts...${NC}"
+                print_info "This runs daily, weekly, and monthly maintenance (may take a minute)..."
+                if sudo periodic daily weekly monthly 2>/dev/null; then
+                    print_good "Periodic scripts completed"
+                else
+                    print_warning "Periodic scripts failed or were cancelled"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+                ;;
+            2)
+                echo -e "\n  ${BOLD}[2/8] Rebuilding Spotlight index...${NC}"
+                print_info "Spotlight will be unavailable for a few minutes while it reindexes..."
+                if sudo mdutil -E / 2>/dev/null; then
+                    print_good "Spotlight index rebuild initiated"
+                    print_info "Reindexing happens in the background — Spotlight will be slow briefly"
+                else
+                    print_warning "Spotlight rebuild failed or requires admin access"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+                ;;
+            3)
+                echo -e "\n  ${BOLD}[3/8] Rebuilding Launch Services database...${NC}"
+                print_info "Clearing 'Open With' duplicates..."
+                local lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+                if [ -x "$lsregister" ]; then
+                    if "$lsregister" -kill -r -domain local -domain system -domain user 2>/dev/null; then
+                        print_good "Launch Services database rebuilt"
+                        print_info "Log out and back in for 'Open With' menus to refresh"
+                    else
+                        print_warning "Launch Services rebuild encountered an error"
+                        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                    fi
+                else
+                    print_warning "lsregister not found — skipping"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+                ;;
+            4)
+                echo -e "\n  ${BOLD}[4/8] Clearing font cache...${NC}"
+                print_info "Removing corrupted font caches (requires admin)..."
+                local font_ok=1
+                sudo atsutil databases -remove 2>/dev/null || font_ok=0
+                sudo atsutil server -shutdown 2>/dev/null
+                sudo atsutil server -ping 2>/dev/null
+                if [ "$font_ok" -eq 1 ]; then
+                    print_good "Font cache cleared"
+                    print_info "A restart may be needed for all font changes to take effect"
+                else
+                    print_warning "Font cache clear failed or requires admin access"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+                ;;
+            5)
+                echo -e "\n  ${BOLD}[5/8] Optimizing Mail database...${NC}"
+                if [ "$has_mail" -eq 0 ]; then
+                    print_info "No Mail data found — skipping"
+                    return
+                fi
+                print_info "Running VACUUM on Mail Envelope Index (may take a moment)..."
+                local mail_db
+                mail_db=$(ls ~/Library/Mail/V*/MailData/Envelope\ Index 2>/dev/null | head -1)
+                if [ -n "$mail_db" ] && [ -f "$mail_db" ]; then
+                    if sqlite3 "$mail_db" vacuum 2>/dev/null; then
+                        print_good "Mail database optimized"
+                    else
+                        print_warning "Mail database optimization failed (Mail may be open — close it first)"
+                        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                    fi
+                else
+                    print_info "Mail Envelope Index not found — skipping"
+                fi
+                ;;
+            6)
+                echo -e "\n  ${BOLD}[6/8] Freeing purgeable disk space...${NC}"
+                print_info "Writing and deleting a 1 GB temp file to trigger purgeable space release..."
+                dd if=/dev/zero of=/tmp/mhc_purgeable bs=1m count=1024 2>/dev/null
+                local dd_exit=$?
+                rm -f /tmp/mhc_purgeable 2>/dev/null
+                if [ "$dd_exit" -eq 0 ]; then
+                    print_good "Purgeable space trigger complete"
+                    print_info "macOS will reclaim purgeable space over the next few minutes"
+                else
+                    print_warning "Purgeable space trigger may not have completed fully"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+                ;;
+            7)
+                echo -e "\n  ${BOLD}[7/8] Thinning Time Machine local snapshots...${NC}"
+                if [ "$has_tm_snapshots" -eq 0 ]; then
+                    print_info "No local Time Machine snapshots found — skipping"
+                    return
+                fi
+                print_info "Requesting macOS to thin local snapshots..."
+                local snap_date
+                snap_date=$(date +%Y%m%d%H%M%S)
+                tmutil thinlocalsnapshots / "$snap_date" 1 2>/dev/null
+                local thin_exit=$?
+                if [ "$thin_exit" -eq 0 ]; then
+                    print_good "Time Machine snapshot thinning requested"
+                    print_info "macOS will reclaim space in the background"
+                else
+                    print_warning "Snapshot thinning returned an error (snapshots may already be minimal)"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+                ;;
+            8)
+                echo -e "\n  ${BOLD}[8/8] Flushing DNS cache...${NC}"
+                print_info "Clearing stale DNS entries (requires admin)..."
+                local dns_ok=1
+                sudo dscacheutil -flushcache 2>/dev/null || dns_ok=0
+                sudo killall -HUP mDNSResponder 2>/dev/null || dns_ok=0
+                if [ "$dns_ok" -eq 1 ]; then
+                    print_good "DNS cache flushed"
+                else
+                    print_warning "DNS flush failed or requires admin access"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+                ;;
+            *)
+                print_info "Unknown task number: $task — skipping"
+                ;;
+        esac
+    }
+
+    for task in $tasks; do
+        if [ "$task" -eq 5 ] && [ "$has_mail" -eq 0 ] 2>/dev/null; then
+            print_info "Task 5 (Speed Up Mail): No Mail data found — skipping"
+            continue
+        fi
+        if [ "$task" -eq 7 ] && [ "$has_tm_snapshots" -eq 0 ] 2>/dev/null; then
+            print_info "Task 7 (Thin TM Snapshots): No snapshots found — skipping"
+            continue
+        fi
+        _maint_run "$task"
+    done
+
+    echo ""
+    print_good "Maintenance tasks complete."
+    echo ""
+}
+
+# ============================================================================
+# 19. HARDWARE MONITOR
+# ============================================================================
+
+check_hardware() {
+    print_header "HARDWARE MONITOR"
+
+    local ARCH
+    ARCH=$(uname -m)
+    local is_apple_silicon=0
+    [ "$ARCH" = "arm64" ] && is_apple_silicon=1
+
+    # CPU Temperature
+    print_section "CPU TEMPERATURE"
+
+    local cpu_temp_c=""
+
+    if [ -z "$cpu_temp_c" ]; then
+        local pm_out
+        pm_out=$(sudo powermetrics --samplers smc -n 1 -i 1 2>/dev/null | grep "CPU die temperature")
+        if [ -n "$pm_out" ]; then
+            cpu_temp_c=$(echo "$pm_out" | grep -o '[0-9]*\.[0-9]*' | head -1)
+        fi
+    fi
+
+    if [ -z "$cpu_temp_c" ]; then
+        local ioreg_temp
+        ioreg_temp=$(ioreg -rn AppleSMC 2>/dev/null | grep -E '"TC0[PD]"' | grep -o '[0-9]\{4,6\}' | head -1)
+        if [ -n "$ioreg_temp" ] && [ "$ioreg_temp" -gt 0 ] 2>/dev/null; then
+            if [ "$ioreg_temp" -gt 1000 ] 2>/dev/null; then
+                cpu_temp_c=$(echo "scale=1; $ioreg_temp / 100" | bc 2>/dev/null)
+            else
+                cpu_temp_c="$ioreg_temp"
+            fi
+        fi
+    fi
+
+    if [ -z "$cpu_temp_c" ] && [ "$is_apple_silicon" -eq 0 ]; then
+        local thermal_level
+        thermal_level=$(sysctl machdep.xcpm.cpu_thermal_level 2>/dev/null | awk '{print $2}')
+        if [ -n "$thermal_level" ]; then
+            print_info "CPU thermal level (Intel proxy): ${BOLD}${thermal_level}%${NC}"
+            if [ "$thermal_level" -eq 0 ] 2>/dev/null; then
+                print_good "No thermal throttling detected"
+            elif [ "$thermal_level" -ge 50 ] 2>/dev/null; then
+                print_bad "CPU is thermally throttling at ${thermal_level}%"
+                TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+                ALL_RECOMMENDATIONS+=("CPU is throttling due to heat. Ensure vents are clear and consider cleaning internal fans.")
+            else
+                print_warning "Mild CPU thermal throttling at ${thermal_level}%"
+                TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+            fi
+        fi
+    fi
+
+    if [ -n "$cpu_temp_c" ]; then
+        local temp_int
+        temp_int=$(echo "$cpu_temp_c" | awk -F'.' '{print $1}')
+        local temp_f
+        temp_f=$(echo "scale=1; $cpu_temp_c * 9 / 5 + 32" | bc 2>/dev/null)
+
+        if [ "$temp_int" -lt 60 ] 2>/dev/null; then
+            print_good "CPU temperature: ${BOLD}${cpu_temp_c}°C / ${temp_f}°F${NC} — Excellent"
+        elif [ "$temp_int" -lt 75 ] 2>/dev/null; then
+            print_good "CPU temperature: ${BOLD}${cpu_temp_c}°C / ${temp_f}°F${NC} — Normal"
+        elif [ "$temp_int" -lt 85 ] 2>/dev/null; then
+            print_warning "CPU temperature: ${BOLD}${cpu_temp_c}°C / ${temp_f}°F${NC} — Warm"
+            print_info "Consider closing heavy apps or checking for dust in vents"
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        else
+            print_bad "CPU temperature: ${BOLD}${cpu_temp_c}°C / ${temp_f}°F${NC} — Hot / Throttling likely"
+            print_info "Check for runaway processes and ensure vents are not blocked"
+            TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+            ALL_RECOMMENDATIONS+=("CPU is running very hot (${cpu_temp_c}°C). Check for runaway processes, clear vents, and let the Mac cool down.")
+        fi
+    else
+        print_info "Temperature monitoring requires admin access (run with sudo for full data)"
+        print_info "Try: sudo powermetrics --samplers smc -n 1 -i 1 | grep 'CPU die temperature'"
+    fi
+
+    # Fan Speed
+    print_section "FAN SPEED"
+
+    local fan_rpm=""
+
+    if [ -z "$fan_rpm" ]; then
+        local fan_pm_out
+        fan_pm_out=$(sudo powermetrics --samplers smc -n 1 -i 1 2>/dev/null | grep -i "Fan")
+        if [ -n "$fan_pm_out" ]; then
+            fan_rpm=$(echo "$fan_pm_out" | grep -o '[0-9]\{3,5\}' | head -1)
+        fi
+    fi
+
+    if [ -z "$fan_rpm" ]; then
+        local ioreg_fan
+        ioreg_fan=$(ioreg -rn AppleSMC 2>/dev/null | grep '"F0Ac"' | grep -o '[0-9]\{2,6\}' | head -1)
+        if [ -n "$ioreg_fan" ] && [ "$ioreg_fan" -gt 0 ] 2>/dev/null; then
+            if [ "$ioreg_fan" -gt 20000 ] 2>/dev/null; then
+                fan_rpm=$(echo "scale=0; $ioreg_fan / 4" | bc 2>/dev/null)
+            else
+                fan_rpm="$ioreg_fan"
+            fi
+        fi
+    fi
+
+    if [ -n "$fan_rpm" ] && [ "$fan_rpm" -gt 0 ] 2>/dev/null; then
+        if [ "$fan_rpm" -lt 2000 ] 2>/dev/null; then
+            print_good "Fan speed: ${BOLD}${fan_rpm} RPM${NC} — Quiet"
+        elif [ "$fan_rpm" -lt 4000 ] 2>/dev/null; then
+            print_good "Fan speed: ${BOLD}${fan_rpm} RPM${NC} — Normal"
+        elif [ "$fan_rpm" -lt 6000 ] 2>/dev/null; then
+            print_warning "Fan speed: ${BOLD}${fan_rpm} RPM${NC} — Running high"
+            print_info "Mac is working hard — check for heavy processes"
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        else
+            print_bad "Fan speed: ${BOLD}${fan_rpm} RPM${NC} — Very high / near maximum"
+            print_info "High heat load detected. Check for runaway processes."
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+            ALL_RECOMMENDATIONS+=("Fans are running at very high speed (${fan_rpm} RPM). Investigate heavy CPU processes and check vents.")
+        fi
+    else
+        if [ "$is_apple_silicon" -eq 1 ]; then
+            print_info "Fan data not exposed via SMC on this Apple Silicon Mac"
+            print_info "Apple Silicon Macs manage thermals passively or with firmware-controlled fans"
+        else
+            print_info "Fan speed data unavailable (try running with sudo for powermetrics access)"
+        fi
+    fi
+
+    # GPU & Display
+    print_section "GPU & DISPLAY"
+
+    local gpu_data
+    gpu_data=$(system_profiler SPDisplaysDataType 2>/dev/null)
+
+    if [ -n "$gpu_data" ]; then
+        local gpu_model
+        gpu_model=$(echo "$gpu_data" | grep "Chipset Model" | head -1 | awk -F': ' '{print $2}' | xargs)
+        [ -n "$gpu_model" ] && print_info "GPU: ${BOLD}${gpu_model}${NC}"
+
+        local vram
+        vram=$(echo "$gpu_data" | grep "VRAM" | head -1 | awk -F': ' '{print $2}' | xargs)
+        [ -n "$vram" ] && print_info "VRAM: ${vram}"
+
+        local metal
+        metal=$(echo "$gpu_data" | grep "Metal" | head -1 | awk -F': ' '{print $2}' | xargs)
+        [ -n "$metal" ] && print_good "Metal: ${metal}"
+
+        local display_count
+        display_count=$(echo "$gpu_data" | grep -c "Resolution:")
+        if [ "$display_count" -gt 0 ]; then
+            print_info "Connected displays: ${BOLD}${display_count}${NC}"
+            echo "$gpu_data" | grep "Resolution:" | while read -r res_line; do
+                local res
+                res=$(echo "$res_line" | awk -F': ' '{print $2}' | xargs)
+                print_info "  Display: ${res}"
+            done
+        fi
+    else
+        print_info "GPU info unavailable"
+    fi
+
+    # Disk I/O
+    print_section "DISK I/O"
+
+    local io_line
+    io_line=$(iostat -d 1 2 2>/dev/null | tail -1)
+
+    if [ -n "$io_line" ]; then
+        local kbt tps mbs
+        kbt=$(echo "$io_line" | awk '{print $1}')
+        tps=$(echo "$io_line" | awk '{print $2}')
+        mbs=$(echo "$io_line" | awk '{print $3}')
+        if [ -n "$mbs" ]; then
+            print_info "Disk throughput (last 1s): ${BOLD}${mbs} MB/s${NC}  |  ${tps} transfers/s  |  ${kbt} KB/transfer"
+            local mbs_int
+            mbs_int=$(echo "$mbs" | awk -F'.' '{print $1}')
+            if [ "$mbs_int" -ge 500 ] 2>/dev/null; then
+                print_good "Disk I/O is excellent (SSD performing well)"
+            elif [ "$mbs_int" -ge 100 ] 2>/dev/null; then
+                print_good "Disk I/O is normal"
+            elif [ "$mbs_int" -ge 1 ] 2>/dev/null; then
+                print_info "Light disk activity"
+            else
+                print_info "Disk is mostly idle"
+            fi
+        fi
+    else
+        print_info "Disk I/O data unavailable"
+    fi
+
+    # USB Devices
+    print_section "USB DEVICES"
+
+    local usb_data
+    usb_data=$(system_profiler SPUSBDataType 2>/dev/null)
+
+    if [ -n "$usb_data" ]; then
+        local usb_count
+        usb_count=$(echo "$usb_data" | grep -c "Product ID:")
+        print_info "USB devices detected: ${BOLD}${usb_count}${NC}"
+    else
+        print_info "No USB data available"
+    fi
+
+    # Bluetooth Devices
+    print_section "BLUETOOTH DEVICES"
+
+    local bt_data
+    bt_data=$(system_profiler SPBluetoothDataType 2>/dev/null)
+
+    if [ -n "$bt_data" ]; then
+        local bt_state
+        bt_state=$(echo "$bt_data" | grep "State:" | head -1 | awk -F': ' '{print $2}' | xargs)
+
+        if [ "$bt_state" = "On" ] || [ -z "$bt_state" ]; then
+            local bt_connected
+            bt_connected=$(echo "$bt_data" | grep -B5 "Connected: Yes" | grep -E "^\s{4,8}[A-Za-z]" | grep -v "Connected\|Address\|Services" | sed 's/^[[:space:]]*//' | sed 's/:$//')
+            if [ -n "$bt_connected" ]; then
+                print_info "Connected Bluetooth devices:"
+                echo "$bt_connected" | while IFS= read -r bt_name; do
+                    [ -n "$bt_name" ] && print_good "  ${bt_name}"
+                done
+            else
+                print_info "Bluetooth is on but no devices are connected"
+            fi
+        else
+            print_info "Bluetooth is off"
+        fi
+    else
+        print_info "Bluetooth data unavailable"
+    fi
+}
+
+# ============================================================================
+# 20. SYSTEM UPDATES & OPTIMIZATIONS
+# ============================================================================
+
+check_system_updates() {
+    print_header "SYSTEM UPDATES & OPTIMIZATIONS"
+
+    # macOS Software Update
+    print_section "macOS UPDATE STATUS"
+
+    local last_sw_check
+    last_sw_check=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate LastSuccessfulDate 2>/dev/null)
+    if [ -n "$last_sw_check" ]; then
+        print_info "Last update check: ${BOLD}${last_sw_check}${NC}"
+        local check_date
+        check_date=$(echo "$last_sw_check" | awk '{print $1}')
+        local today_stamp
+        today_stamp=$(date +%Y-%m-%d)
+        local days_since
+        days_since=$(perl -e "
+            use POSIX qw(floor);
+            my (\$y1,\$m1,\$d1) = split('-','$check_date');
+            my (\$y2,\$m2,\$d2) = split('-','$today_stamp');
+            use Time::Local;
+            my \$t1 = timelocal(0,0,12,\$d1,\$m1-1,\$y1-1900);
+            my \$t2 = timelocal(0,0,12,\$d2,\$m2-1,\$y2-1900);
+            print floor((\$t2-\$t1)/86400);
+        " 2>/dev/null)
+        if [ -n "$days_since" ]; then
+            if [ "$days_since" -le 7 ] 2>/dev/null; then
+                print_good "Update check is recent (${days_since} days ago)"
+            elif [ "$days_since" -le 30 ] 2>/dev/null; then
+                print_warning "Update check was ${days_since} days ago — consider running Software Update"
+                TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+            else
+                print_bad "Update check was ${days_since} days ago — updates may be overdue"
+                TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+                ALL_RECOMMENDATIONS+=("macOS update check hasn't run in ${days_since} days. Open System Settings > General > Software Update.")
+            fi
+        fi
+    else
+        print_info "Could not determine last update check date"
+    fi
+
+    print_info "Checking for macOS updates (this may take 15-30 seconds)..."
+    local sw_updates
+    sw_updates=$(timeout 30 softwareupdate -l 2>/dev/null)
+    local sw_exit=$?
+
+    if [ "$sw_exit" -eq 124 ]; then
+        print_warning "Software update check timed out — Apple servers may be slow"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+    elif echo "$sw_updates" | grep -q "No new software available" 2>/dev/null; then
+        print_good "macOS is up to date"
+    elif echo "$sw_updates" | grep -q "\*" 2>/dev/null; then
+        local update_count
+        update_count=$(echo "$sw_updates" | grep -c "^\*")
+        print_bad "${update_count} macOS update(s) available:"
+        echo "$sw_updates" | grep "Title:" | while IFS= read -r u_line; do
+            local u_name
+            u_name=$(echo "$u_line" | awk -F': ' '{print $2}' | xargs)
+            print_info "  ${u_name}"
+        done
+        TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+        ALL_RECOMMENDATIONS+=("${update_count} macOS update(s) are available. Open System Settings > General > Software Update to install.")
+    else
+        print_info "Could not determine update status"
+    fi
+
+    # Homebrew Updates
+    print_section "HOMEBREW PACKAGES"
+
+    if command -v brew &>/dev/null; then
+        print_info "Homebrew is installed — checking for outdated packages..."
+
+        local brew_outdated
+        brew_outdated=$(brew outdated 2>/dev/null)
+
+        if [ -z "$brew_outdated" ]; then
+            print_good "All Homebrew packages are up to date"
+        else
+            local brew_count
+            brew_count=$(echo "$brew_outdated" | grep -c "." 2>/dev/null || echo "0")
+            print_warning "${brew_count} outdated Homebrew package(s):"
+            echo "$brew_outdated" | while IFS= read -r pkg_line; do
+                [ -n "$pkg_line" ] && print_info "  ${pkg_line}"
+            done
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+            ALL_RECOMMENDATIONS+=("${brew_count} Homebrew package(s) are outdated. Run 'brew upgrade' to update them.")
+            echo ""
+            printf "  Upgrade all Homebrew packages now? (y/n): "
+            local brew_ans
+            read -r brew_ans
+            if [ "$brew_ans" = "y" ] || [ "$brew_ans" = "Y" ]; then
+                print_info "Running 'brew upgrade'..."
+                if brew upgrade 2>/dev/null; then
+                    print_good "Homebrew packages upgraded successfully"
+                else
+                    print_warning "Some Homebrew packages may have failed to upgrade"
+                    TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+                fi
+            else
+                print_info "Skipping Homebrew upgrade — run 'brew upgrade' when ready"
+            fi
+        fi
+    else
+        print_info "Homebrew is not installed — skipping"
+        print_info "Install at: https://brew.sh"
+    fi
+
+    # Recommended System Settings
+    print_section "RECOMMENDED SYSTEM SETTINGS"
+
+    echo -e "  ${DIM}Checking your update and security settings...${NC}"
+    echo ""
+
+    local auto_check
+    auto_check=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null)
+    if [ "$auto_check" = "1" ]; then
+        print_good "Automatic update checks: ${BOLD}Enabled${NC}"
+    else
+        print_warning "Automatic update checks: ${BOLD}Disabled${NC}"
+        print_info "  Enable: System Settings > General > Software Update > Automatic updates"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        ALL_RECOMMENDATIONS+=("Automatic update checks are off. Enable them in System Settings > General > Software Update.")
+    fi
+
+    local auto_download
+    auto_download=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload 2>/dev/null)
+    if [ "$auto_download" = "1" ]; then
+        print_good "Automatic update downloads: ${BOLD}Enabled${NC}"
+    else
+        print_warning "Automatic update downloads: ${BOLD}Disabled${NC}"
+        print_info "  Enable: System Settings > General > Software Update > Download updates automatically"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        ALL_RECOMMENDATIONS+=("Automatic update downloads are off. Enable them in System Settings > General > Software Update.")
+    fi
+
+    local as_auto_update
+    as_auto_update=$(defaults read /Library/Preferences/com.apple.commerce AutoUpdate 2>/dev/null)
+    if [ "$as_auto_update" = "1" ]; then
+        print_good "App Store automatic updates: ${BOLD}Enabled${NC}"
+    else
+        print_warning "App Store automatic updates: ${BOLD}Disabled${NC}"
+        print_info "  Enable: System Settings > General > Software Update > App updates"
+        TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+        ALL_RECOMMENDATIONS+=("App Store automatic updates are off. Enable them in System Settings > General > Software Update.")
+    fi
+
+    local screen_lock_delay
+    screen_lock_delay=$(defaults read com.apple.screensaver askForPasswordDelay 2>/dev/null)
+    local screen_lock_enabled
+    screen_lock_enabled=$(defaults read com.apple.screensaver askForPassword 2>/dev/null)
+
+    if [ "$screen_lock_enabled" = "1" ]; then
+        if [ -z "$screen_lock_delay" ] || [ "$screen_lock_delay" = "0" ] 2>/dev/null; then
+            print_good "Screen lock: ${BOLD}Immediately on sleep${NC}"
+        elif [ "$screen_lock_delay" -le 5 ] 2>/dev/null; then
+            print_good "Screen lock: ${BOLD}After ${screen_lock_delay}s${NC}"
+        else
+            print_warning "Screen lock delay: ${BOLD}${screen_lock_delay} seconds${NC} — consider reducing to 5s or less"
+            print_info "  Change: System Settings > Lock Screen > Require password"
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + 1))
+            ALL_RECOMMENDATIONS+=("Screen lock is delayed ${screen_lock_delay}s after sleep. Reduce to 5s or less for better security.")
+        fi
+    else
+        print_bad "Screen lock: ${BOLD}Disabled${NC} — screen does not require password after sleep"
+        print_info "  Enable: System Settings > Lock Screen > Require password after sleep"
+        TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + 1))
+        ALL_RECOMMENDATIONS+=("Screen lock is disabled. Enable it in System Settings > Lock Screen > Require password after sleep.")
+    fi
+
+    echo ""
+    print_good "System settings check complete."
+    echo ""
+}
+
+# ============================================================================
+# FINAL SUMMARY
 # ============================================================================
 
 show_summary() {
@@ -1641,10 +3560,17 @@ main() {
     check_battery
     check_resource_hogs
     check_storage
+    find_large_files
+    find_duplicates
     check_stale_apps
+    uninstall_apps
     check_startup
     run_cleanup
+    cleanup_privacy
+    run_maintenance
+    check_hardware
     show_optimizations
+    check_system_updates
     check_wifi
     check_backup
     check_security
